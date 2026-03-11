@@ -1,0 +1,4 @@
+requests-cache
+beautifulsoup4
+markdownify
+modal
