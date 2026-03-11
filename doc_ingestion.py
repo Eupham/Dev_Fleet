@@ -10,6 +10,7 @@ import modal
 # --- Modal App Setup ---
 app = modal.App("dev_fleet_doc_ingestion")
 volume = modal.Volume.from_name("dev_fleet_docs", create_if_missing=True)
+jules_secret = modal.Secret.from_name("jules-api-key")
 
 DOC_TARGETS = {
     "Modal": "https://modal.com/docs/guide",
@@ -62,7 +63,9 @@ def extract_to_markdown(url: str) -> tuple:
 @app.function(
     schedule=modal.Cron("0 0 1 * *"), 
     volumes={"/docs_volume": volume},
-    image=modal.Image.debian_slim().pip_install("requests", "beautifulsoup4", "markdownify")
+    image=modal.Image.debian_slim().pip_install("requests", "beautifulsoup4", "markdownify"),
+    timeout=1800, # 30 minutes instead of default 5 minutes
+    secrets=[jules_secret]
 )
 def rebuild_knowledge_base():
     """Crawls targets and compiles them into master Markdown files."""
@@ -98,3 +101,25 @@ def rebuild_knowledge_base():
         print(f"✅ Saved {name} to {file_path}")
         
     volume.commit()
+
+    # Notify Jules API that ingestion is complete
+    print(f"JULES_API_KEY environment variable is present: {'JULES_API_KEY' in os.environ}")
+    api_key = os.environ.get("JULES_API_KEY", "")
+    print(f"Ingestion complete. API Key length: {len(api_key)}")
+
+    try:
+        import requests
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        # Notify the provided Jules API Endpoint
+        response = requests.post(
+            "https://developers.google.com/jules/api",
+            headers=headers,
+            json={"status": "completed", "message": "Knowledge base ingestion finished."},
+            timeout=10
+        )
+        print(f"Notified Jules API. Status code: {response.status_code}")
+    except Exception as e:
+        print(f"Failed to notify Jules API: {e}")
