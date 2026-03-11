@@ -17,7 +17,9 @@ DOC_TARGETS = {
     "vLLM": "https://docs.vllm.ai/en/latest/",
     "FastAPI": "https://fastapi.tiangolo.com/",
     "DSPy": "https://dspy-docs.vercel.app/docs/intro",
-    "LiteLLM": "https://docs.litellm.ai/docs/"
+    "LiteLLM": "https://docs.litellm.ai/docs/",
+    "JulesAPI": "https://developers.google.com/jules/api",
+    "JulesREST": "https://developers.google.com/jules/api/reference/rest"
 }
 
 def get_links(base_url: str) -> list:
@@ -65,7 +67,7 @@ def extract_to_markdown(url: str) -> tuple:
     volumes={"/docs_volume": volume},
     image=modal.Image.debian_slim().pip_install("requests", "beautifulsoup4", "markdownify"),
     timeout=1800, # 30 minutes instead of default 5 minutes
-    secrets=[jules_secret]
+    secrets=[jules_secret, modal.Secret.from_name("jules-session-id")]
 )
 def rebuild_knowledge_base():
     """Crawls targets and compiles them into master Markdown files."""
@@ -105,21 +107,39 @@ def rebuild_knowledge_base():
     # Notify Jules API that ingestion is complete
     print(f"JULES_API_KEY environment variable is present: {'JULES_API_KEY' in os.environ}")
     api_key = os.environ.get("JULES_API_KEY", "")
+    session_id = os.environ.get("JULES_SESSION_ID", "")
+
+    if not api_key:
+        print("Error: Missing JULES_API_KEY")
+        return
+
+    if not session_id:
+        print("Error: Missing JULES_SESSION_ID")
+        return
+
     print(f"Ingestion complete. API Key length: {len(api_key)}")
 
     try:
         import requests
         headers = {
-            "Authorization": f"Bearer {api_key}",
+            "X-Goog-Api-Key": api_key,
             "Content-Type": "application/json"
         }
-        # Notify the provided Jules API Endpoint
+
+        # Send message to the Jules API
+        # Handle cases where session_id might just be the ID or the full 'sessions/ID' string
+        if not session_id.startswith("sessions/"):
+            session_id = f"sessions/{session_id}"
+
+        url = f"https://jules.googleapis.com/v1alpha/{session_id}:sendMessage"
         response = requests.post(
-            "https://developers.google.com/jules/api",
+            url,
             headers=headers,
-            json={"status": "completed", "message": "Knowledge base ingestion finished."},
+            json={"prompt": "Knowledge base ingestion finished successfully."},
             timeout=10
         )
         print(f"Notified Jules API. Status code: {response.status_code}")
+        if response.status_code != 200:
+            print(f"Response: {response.text}")
     except Exception as e:
         print(f"Failed to notify Jules API: {e}")

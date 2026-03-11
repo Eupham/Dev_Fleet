@@ -1,6 +1,13 @@
 {
-  "prompt": "You are the primary orchestrator for a new infrastructure project. Read the attached master_instructions.md carefully. You have two initial tasks:\n\n1. Set up the FastAPI file structure for Workspace 1 (Alt_git) including the /telemetry/crash endpoint required for asynchronous log capture. Deploy it to Modal using the AG_MODAL_TOKEN credentials.\n2. Add the attached doc_ingestion.py script to Workspace 2 (dev_fleet). Deploy it using the DF_MODAL_TOKEN credentials and trigger a manual run so our offline documentation volume is populated.\n\nVerify both are running and report back your status.",
-  "automationMode": "AUTO_INTERACTIVE",
+  "prompt": "You are the primary orchestrator for a new infrastructure project. Read the attached master_instructions.md carefully. You have two initial tasks:\n\n1. Set up the FastAPI file structure for Workspace 1 (Alt_git) including the /telemetry/crash endpoint required for asynchronous log capture. Deploy it to Modal using the AG_MODAL_TOKEN credentials.\n2. Add the attached doc_ingestion.py script to Workspace 2 (dev_fleet). Deploy it using the DF_MODAL_TOKEN credentials and trigger a manual run so our offline documentation volume is populated.\n\nVerify both are running and report back your status. We will use this conversation thread continuously as parts are built and run. When errors occur, we will send follow-up messages here. Use the Jules_Test_Lab (Workspace 3) to test code before submitting to Alt_git.",
+  "automationMode": "AUTO_CREATE_PR",
+  "title": "Setup Alt_git API and doc ingestion",
+  "sourceContext": {
+    "source": "sources/github/Eupham/Dev_Fleet",
+    "githubRepoContext": {
+      "startingBranch": "main"
+    }
+  },
   "files": [
     {
       "name": "master_instructions.md",
