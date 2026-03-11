@@ -1,0 +1,14 @@
+{
+  "prompt": "You are the primary orchestrator for a new infrastructure project. Read the attached master_instructions.md carefully. You have two initial tasks:\n\n1. Set up the FastAPI file structure for Workspace 1 (Alt_git) including the /telemetry/crash endpoint required for asynchronous log capture. Deploy it to Modal using the AG_MODAL_TOKEN credentials.\n2. Add the attached doc_ingestion.py script to Workspace 2 (dev_fleet). Deploy it using the DF_MODAL_TOKEN credentials and trigger a manual run so our offline documentation volume is populated.\n\nVerify both are running and report back your status.",
+  "automationMode": "AUTO_INTERACTIVE",
+  "files": [
+    {
+      "name": "master_instructions.md",
+      "content": "<PASTE_RAW_MASTER_INSTRUCTIONS_MD_HERE>"
+    },
+    {
+      "name": "doc_ingestion.py",
+      "content": "<PASTE_RAW_DOC_INGESTION_PY_HERE>"
+    }
+  ]
+}
