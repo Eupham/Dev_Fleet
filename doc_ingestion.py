@@ -1,6 +1,8 @@
 #The script that will run in `dev_fleet` to pull documentation and save it to a Modal Volume as clean Markdown for later ingestion
 import os
 import requests
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
 from datetime import datetime
@@ -46,7 +48,16 @@ def get_links(base_url: str) -> list:
 def extract_to_markdown(url: str) -> tuple:
     """Extracts main content and converts it to clean Markdown."""
     try:
+        # Be polite to the servers
+        time.sleep(0.5)
+
         response = requests.get(url, timeout=10)
+        status = response.status_code
+        if status != 200:
+             print(f"[{status}] Failed to fetch: {url}")
+             return "Error", url, f"HTTP Error {status} on {url}"
+
+        print(f"[{status}] Successfully fetched: {url}")
         soup = BeautifulSoup(response.text, 'html.parser')
         
         # Target the main content area to avoid navbars and sidebars
@@ -58,9 +69,33 @@ def extract_to_markdown(url: str) -> tuple:
         
         # Convert HTML to Markdown, stripping out images and preserving code blocks
         raw_markdown = md(str(content), heading_style="ATX", strip=['img', 'script', 'style'])
-        return title, raw_markdown
+        return title, url, raw_markdown
     except Exception as e:
-        return "Error", f"Failed to extract {url}: {e}"
+        print(f"[ERROR] Exception on {url}: {e}")
+        return "Error", url, f"Failed to extract {url}: {e}"
+
+def process_target(name: str, base_url: str) -> tuple:
+    """Processes a single documentation target and its links."""
+    print(f"Rebuilding {name} knowledge base...")
+    links = get_links(base_url)
+    print(f"[{name}] Found {len(links)} links to process.")
+
+    pages_data = []
+
+    # Process links in parallel
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        # submit all links to the executor
+        future_to_url = {executor.submit(extract_to_markdown, url): url for url in links}
+
+        for future in as_completed(future_to_url):
+            url = future_to_url[future]
+            try:
+                title, processed_url, markdown_content = future.result()
+                pages_data.append((title, processed_url, markdown_content))
+            except Exception as exc:
+                print(f"[{name}] {url} generated an exception: {exc}")
+
+    return name, base_url, pages_data
 
 @app.function(
     schedule=modal.Cron("0 0 1 * *"), 
@@ -73,18 +108,28 @@ def rebuild_knowledge_base():
     """Crawls targets and compiles them into master Markdown files."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
     
-    for name, base_url in DOC_TARGETS.items():
-        print(f"Rebuilding {name} knowledge base...")
-        links = get_links(base_url)
-        
+    # Process documentation targets in parallel
+    results = []
+    with ThreadPoolExecutor(max_workers=len(DOC_TARGETS)) as target_executor:
+        future_to_target = {target_executor.submit(process_target, name, url): name for name, url in DOC_TARGETS.items()}
+        for future in as_completed(future_to_target):
+            name = future_to_target[future]
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as exc:
+                print(f"[MASTER] Target {name} generated an exception: {exc}")
+
+    # Save the processed data to markdown files sequentially
+    for name, base_url, pages_data in results:
         master_md = f"# {name} Master Documentation\n"
         master_md += f"**Last Updated:** {timestamp}\n\n"
         master_md += "## Index\n"
         
-        pages_data = []
-        for i, url in enumerate(links):
-            title, markdown_content = extract_to_markdown(url)
-            pages_data.append((title, url, markdown_content))
+        # Ensure consistent ordering
+        pages_data.sort(key=lambda x: x[1])
+
+        for i, (title, url, _) in enumerate(pages_data):
             anchor = title.lower().replace(" ", "-").replace("/", "")
             master_md += f"{i+1}. [{title}](#{anchor})\n"
             
