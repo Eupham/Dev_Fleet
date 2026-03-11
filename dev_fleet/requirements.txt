@@ -2,3 +2,8 @@ requests-cache
 beautifulsoup4
 markdownify
 modal
+dspy-ai
+aider-chat
+vllm
+transformers
+fastapi
