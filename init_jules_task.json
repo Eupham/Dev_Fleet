@@ -1,5 +1,11 @@
 {
-  "prompt": "You are the primary orchestrator for a new infrastructure project. Read the attached master_instructions.md carefully. You have two initial tasks:\n\n1. Set up the FastAPI file structure for Workspace 1 (Alt_git) including the /telemetry/crash endpoint required for asynchronous log capture. Deploy it to Modal using the AG_MODAL_TOKEN credentials.\n2. Add the attached doc_ingestion.py script to Workspace 2 (dev_fleet). Deploy it using the DF_MODAL_TOKEN credentials and trigger a manual run so our offline documentation volume is populated.\n\nVerify both are running and report back your status.",
+  "prompt": "You are the primary orchestrator bootstrapping the greenfield Dev_Fleet infrastructure project. Read master_instructions.md carefully. \n\nExecute Phase 1 (Parallel Tracks):\nTask 1: Setup the FastAPI file structure for Workspace 1 (Alt_git) including the Pydantic schemas and the /telemetry/crash endpoint. Deploy to Modal using the AG_MODAL_TOKEN credentials.\nTask 2: Add doc_ingestion.py to Workspace 2 (dev_fleet). Deploy it using the DF_MODAL_TOKEN credentials and trigger a manual run so our offline documentation volume is populated.\n\nDo NOT create a new session after this. I will await your asynchronous status update ping in this exact thread once the ingestion script finishes.",
+  "sourceContext": {
+    "source": "sources/github/YOUR_GITHUB_USER/YOUR_REPO_NAME",
+    "githubRepoContext": {
+      "startingBranch": "main"
+    }
+  },
   "automationMode": "AUTO_INTERACTIVE",
   "files": [
     {
