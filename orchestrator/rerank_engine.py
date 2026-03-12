@@ -1,17 +1,24 @@
-"""Rerank Engine — Scores edge relevance between task nodes and graph candidates.
+"""Rerank Engine — Qwen3-Reranker cross-encoder edge scoring.
 
-Uses the 7B model (or a lightweight embedding model) to compute a relevance
-score between an ``AtomicTaskNode`` and candidate nodes from the Semantic
-Graph.  Edges with score > 0.75 are created.
+Uses Qwen3-Reranker-0.6B to assess the relevance between task nodes
+(from the Frege-decomposed DAG) and candidate nodes from the three
+Knowledge Graphs (Semantic, Procedural, Episodic).
+
+Frege's compositionality principle is applied: scored edges encode
+contextual relevance, letting the agent loop derive task complexity
+and difficulty from the graph topology.
+
+Edges with score > ``EDGE_THRESHOLD`` are created.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-import httpx
 from pydantic import BaseModel, Field
 
+logger = logging.getLogger("devfleet.rerank")
 
 # ---------------------------------------------------------------------------
 # Pydantic schema for scored edges
@@ -19,34 +26,12 @@ from pydantic import BaseModel, Field
 
 
 class ScoredEdge(BaseModel):
-    """A scored relationship between an episodic task and a semantic node."""
+    """A scored relationship between an episodic task and a graph node."""
 
     task_id: str
     candidate_id: str
     score: float = Field(ge=0.0, le=1.0)
     rationale: str = ""
-
-
-# ---------------------------------------------------------------------------
-# Reranking prompt template
-# ---------------------------------------------------------------------------
-
-RERANK_SYSTEM = """You are a relevance scoring engine.
-Given a TASK description and a CANDIDATE code element, respond with ONLY
-a JSON object: {"score": <float 0.0-1.0>, "rationale": "<one sentence>"}.
-Score 1.0 = perfectly relevant, 0.0 = completely irrelevant."""
-
-
-def _build_rerank_messages(
-    task_desc: str, candidate_desc: str
-) -> list[dict[str, str]]:
-    return [
-        {"role": "system", "content": RERANK_SYSTEM},
-        {
-            "role": "user",
-            "content": f"TASK: {task_desc}\nCANDIDATE: {candidate_desc}",
-        },
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -60,11 +45,8 @@ def rerank_candidates(
     task_id: str,
     task_description: str,
     candidates: list[dict[str, Any]],
-    inference_url: str,
-    model: str = "llm",
-    timeout: float = 60.0,
 ) -> list[ScoredEdge]:
-    """Score each *candidate* against the given task via the LLM.
+    """Score each *candidate* against the task using Qwen3-Reranker.
 
     Parameters
     ----------
@@ -74,63 +56,33 @@ def rerank_candidates(
         Human-readable task description.
     candidates:
         List of dicts with at least ``{"id": str, "description": str}``.
-    inference_url:
-        Base URL of the vLLM inference service.
-    model:
-        Served model name.
-    timeout:
-        Per-request HTTP timeout.
 
     Returns
     -------
     List of ``ScoredEdge`` objects with score > ``EDGE_THRESHOLD``.
     """
-    import json as _json
+    if not candidates:
+        return []
+
+    from inference.reranker import Reranker
+
+    cand_descs = [c.get("description", "") for c in candidates]
+
+    try:
+        scores = Reranker().score_pairs.remote(task_description, cand_descs)
+    except Exception:
+        logger.exception("Reranker call failed for task %s", task_id)
+        return []
 
     edges: list[ScoredEdge] = []
-
-    for cand in candidates:
-        messages = _build_rerank_messages(
-            task_description, cand.get("description", "")
-        )
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "temperature": 0.0,
-            "max_tokens": 256,
-        }
-
-        try:
-            resp = httpx.post(
-                f"{inference_url}/v1/chat/completions",
-                json=payload,
-                timeout=timeout,
-            )
-            resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"].strip()
-
-            # Strip markdown fences if present
-            if content.startswith("```"):
-                content = content.split("\n", 1)[1]
-            if content.endswith("```"):
-                content = content.rsplit("```", 1)[0]
-            content = content.strip()
-
-            result = _json.loads(content)
-            score = float(result.get("score", 0.0))
-            rationale = result.get("rationale", "")
-        except Exception:
-            score = 0.0
-            rationale = "scoring_error"
-
+    for cand, score in zip(candidates, scores):
         if score > EDGE_THRESHOLD:
             edges.append(
                 ScoredEdge(
                     task_id=task_id,
                     candidate_id=cand["id"],
                     score=score,
-                    rationale=rationale,
+                    rationale=f"reranker_score={score:.3f}",
                 )
             )
-
     return edges

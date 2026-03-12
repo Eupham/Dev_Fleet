@@ -4,8 +4,7 @@ Uses Frege's compositionality principle: a complex prompt is structurally
 decomposed into a Directed Acyclic Graph of *atomic* tasks.  Each node is
 validated via a strict Pydantic schema.
 
-The decomposition is performed by the 7B model (hosted locally on the
-orchestrator GPU or queried via the inference URL).
+Decomposition is performed by the 32B model via Modal-native RPC.
 """
 
 from __future__ import annotations
@@ -14,7 +13,6 @@ import json
 import uuid
 from typing import Any
 
-import httpx
 from pydantic import BaseModel, Field
 
 
@@ -75,44 +73,27 @@ def _build_decomposition_messages(
 
 def parse_prompt(
     user_prompt: str,
-    inference_url: str,
     model: str = "llm",
-    timeout: float = 120.0,
 ) -> TaskDAG:
-    """Decompose *user_prompt* into a ``TaskDAG`` via the LLM.
+    """Decompose *user_prompt* into a ``TaskDAG`` via the 32B model.
 
     Parameters
     ----------
     user_prompt:
         The raw natural-language request.
-    inference_url:
-        Base URL of the vLLM inference service.
     model:
         Served model name (default ``"llm"``).
-    timeout:
-        HTTP timeout in seconds.
 
     Returns
     -------
     TaskDAG validated by Pydantic.
     """
+    from orchestrator.llm_client import chat_completion
+
     messages = _build_decomposition_messages(user_prompt)
-
-    payload: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0.2,
-        "max_tokens": 2048,
-    }
-
-    resp = httpx.post(
-        f"{inference_url}/v1/chat/completions",
-        json=payload,
-        timeout=timeout,
+    content = chat_completion(
+        messages, model=model, temperature=0.2, max_tokens=2048,
     )
-    resp.raise_for_status()
-
-    content = resp.json()["choices"][0]["message"]["content"]
 
     # The model may wrap JSON in markdown fences — strip them.
     content = content.strip()

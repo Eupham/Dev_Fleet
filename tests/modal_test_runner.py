@@ -20,7 +20,6 @@ test_image = (
     .pip_install(
         "networkx>=3.2",
         "pydantic>=2.5",
-        "httpx>=0.27",
     )
     .add_local_dir("orchestrator", remote_path="/root/orchestrator")
 )

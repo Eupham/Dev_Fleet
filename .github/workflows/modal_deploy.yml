@@ -4,20 +4,11 @@ on:
   push:
     branches: [main]
     paths:
+      - "app.py"
       - "inference/**"
       - "orchestrator/**"
       - "requirements.txt"
   workflow_dispatch:
-    inputs:
-      deploy_target:
-        description: "Which service to deploy"
-        required: true
-        default: "all"
-        type: choice
-        options:
-          - all
-          - inference
-          - orchestrator
 
 jobs:
   validate:
@@ -34,31 +25,21 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install modal networkx pydantic httpx
+        run: pip install modal networkx pydantic
 
-      - name: Validate inference/server.py syntax & Modal API
+      - name: Validate app.py syntax & Modal API
         env:
           MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
-        run: python -c "import importlib.util; spec = importlib.util.spec_from_file_location('s', 'inference/server.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print('✓ inference/server.py')"
+        run: python -c "import importlib.util; spec = importlib.util.spec_from_file_location('app', 'app.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print('✓ app.py')"
 
-      - name: Validate orchestrator/core_app.py syntax & Modal API
-        env:
-          MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
-        run: python -c "import importlib.util; spec = importlib.util.spec_from_file_location('s', 'orchestrator/core_app.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print('✓ orchestrator/core_app.py')"
-
-  deploy-inference:
-    name: Deploy Inference Engine to Modal
+  deploy:
+    name: Deploy Dev Fleet to Modal
     needs: validate
     runs-on: ubuntu-latest
     environment: modal secrets
     permissions:
       contents: read
-    if: >-
-      github.event_name == 'push' ||
-      github.event.inputs.deploy_target == 'all' ||
-      github.event.inputs.deploy_target == 'inference'
     steps:
       - uses: actions/checkout@v6
 
@@ -69,56 +50,22 @@ jobs:
       - name: Install Modal
         run: pip install modal
 
-      - name: Deploy inference service
+      - name: Deploy unified app
         env:
           MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
-        run: modal deploy inference/server.py
+        run: modal deploy app.py
 
       - name: Fetch deployment logs
         if: always()
         env:
           MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
-        run: timeout 30 modal app logs devfleet-inference || true
-
-  deploy-orchestrator:
-    name: Deploy Orchestrator to Modal
-    needs: validate
-    runs-on: ubuntu-latest
-    environment: modal secrets
-    permissions:
-      contents: read
-    if: >-
-      github.event_name == 'push' ||
-      github.event.inputs.deploy_target == 'all' ||
-      github.event.inputs.deploy_target == 'orchestrator'
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install Modal + deps
-        run: pip install modal networkx pydantic httpx
-
-      - name: Deploy orchestrator service
-        env:
-          MODAL_TOKEN_ID: ${{ secrets.AG_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.AG_MODAL_TOKEN_SECRET }}
-        run: modal deploy orchestrator/core_app.py
-
-      - name: Fetch deployment logs
-        if: always()
-        env:
-          MODAL_TOKEN_ID: ${{ secrets.AG_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.AG_MODAL_TOKEN_SECRET }}
-        run: timeout 30 modal app logs devfleet-orchestrator || true
+        run: timeout 30 modal app logs devfleet || true
 
   smoke-test:
     name: Smoke test on Modal
-    needs: [deploy-inference, deploy-orchestrator]
+    needs: deploy
     runs-on: ubuntu-latest
     environment: modal secrets
     permissions:
@@ -131,18 +78,18 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install modal networkx pydantic httpx
+        run: pip install modal networkx pydantic
 
       - name: Run orchestrator smoke test on Modal
         env:
-          MODAL_TOKEN_ID: ${{ secrets.AG_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.AG_MODAL_TOKEN_SECRET }}
+          MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
         run: |
-          modal run orchestrator/core_app.py --prompt "Write a hello world function in Python"
+          modal run app.py --prompt "Write a hello world function in Python"
 
       - name: Run Modal-native unit tests
         env:
-          MODAL_TOKEN_ID: ${{ secrets.AG_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.AG_MODAL_TOKEN_SECRET }}
+          MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
         run: |
           modal run tests/modal_test_runner.py

@@ -5,47 +5,56 @@
 
 ## Architecture
 
-Two decoupled microservices running on [Modal](https://modal.com):
+A single Modal app (`devfleet`) with three container types:
 
-| Service | Description | Model | GPU |
-|---------|-------------|-------|-----|
-| **Inference Engine** | OpenAI-compatible vLLM server | `Qwen/Qwen2.5-Coder-32B-Instruct` | A100-80 GB |
-| **Orchestrator** | Tri-Graph agent + sandboxed execution | `Qwen/Qwen2.5-Coder-7B-Instruct` | L40S |
+| Container | Description | Model | Resource |
+|-----------|-------------|-------|----------|
+| **Inference** | OpenAI-compatible vLLM server | `Qwen/Qwen2.5-Coder-32B-Instruct` | A100-80 GB |
+| **Reranker** | Cross-encoder edge scoring | `Qwen/Qwen3-Reranker-0.6B` | CPU |
+| **Orchestrator** | Tri-Graph agent + sandboxed execution | — | CPU |
+
+All inter-container calls use **Modal-native RPC** (``.remote()``),
+eliminating HTTP overhead, idle-timeout waste, and the need for separate
+service URLs.
 
 ```
 User Prompt
     │
     ▼
-┌──────────────────────────┐
-│  Orchestrator (Service B)│
-│  ┌─────────────────────┐ │        ┌──────────────────────┐
-│  │ Frege Parser (7B)   │─┼──HTTP──▶  Inference Engine    │
-│  │ Rerank Engine (7B)  │ │        │  (Service A)          │
-│  │ Graph Memory (NX)   │ │        │  vLLM + 32B model     │
-│  │ Agent Loop           │ │        │  /v1/chat/completions │
-│  │ Tool Sandbox         │ │        └──────────────────────┘
-│  └─────────────────────┘ │
-└──────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  devfleet (single Modal app)                         │
+│                                                      │
+│  ┌─────────────────────┐                             │
+│  │ Orchestrator (CPU)  │                             │
+│  │  Frege Parser       │──.remote()──▶ Inference     │
+│  │  Graph Memory (NX)  │              (A100, vLLM)   │
+│  │  Agent Loop         │                             │
+│  │  Tool Sandbox       │──.remote()──▶ Reranker      │
+│  └─────────────────────┘              (CPU, 0.6B)    │
+└──────────────────────────────────────────────────────┘
 ```
 
 ## Project Structure
 
 ```
 Dev_Fleet/
+├── app.py                   # Unified Modal app entry point
 ├── inference/
-│   └── server.py            # Microservice A — vLLM on A100
+│   ├── server.py            # Inference — vLLM on A100 (+ web endpoint)
+│   └── reranker.py          # Reranker — Qwen3-Reranker-0.6B
 ├── orchestrator/
-│   ├── core_app.py          # Modal app, secrets, entrypoint
+│   ├── core_app.py          # run_agent function (CPU)
 │   ├── graph_memory.py      # Semantic / Procedural / Episodic graphs (NetworkX)
 │   ├── frege_parser.py      # Prompt → Task DAG decomposition (Pydantic)
-│   ├── rerank_engine.py     # Cross-encode edge relevance scoring
+│   ├── rerank_engine.py     # Cross-encoder edge scoring logic
+│   ├── llm_client.py        # Thin wrapper for Modal-native inference calls
 │   ├── tool_sandbox.py      # Ephemeral Modal Sandbox execution
 │   └── agent_loop.py        # Cyclic state machine
-├── tests/                   # Unit tests (pytest)
+├── tests/                   # Unit tests (Modal-native)
 ├── docs/
 │   ├── ground_truth.md      # Canonical architecture decisions & tested patterns
 │   └── change_log.md        # Running log of changes
-├── deploy.sh                # Detached deployment script
+├── deploy.sh                # Single deployment script
 └── requirements.txt         # Local development dependencies
 ```
 
@@ -54,7 +63,7 @@ Dev_Fleet/
 ### Prerequisites
 
 - Python 3.12+
-- A Modal account with secrets configured (see below)
+- A Modal account
 
 ### Install Dependencies
 
@@ -66,45 +75,47 @@ pip install -r requirements.txt
 
 Modal authentication is handled via GitHub environment secrets in the
 `modal secrets` environment.  The workflow sets `MODAL_TOKEN_ID` /
-`MODAL_TOKEN_SECRET` automatically — no Modal-side secret group is needed.
+`MODAL_TOKEN_SECRET` automatically.
 
 | GitHub Secret | Purpose |
 |---------------|---------|
-| `DF_MODAL_TOKEN_ID` | Inference service token ID |
-| `DF_MODAL_TOKEN_SECRET` | Inference service token secret |
-| `AG_MODAL_TOKEN_ID` | Orchestrator service token ID |
-| `AG_MODAL_TOKEN_SECRET` | Orchestrator service token secret |
+| `DF_MODAL_TOKEN_ID` | Modal token ID |
+| `DF_MODAL_TOKEN_SECRET` | Modal token secret |
 
 ### Deploy
 
 ```bash
-# Deploy both services (detached — non-blocking)
+# Deploy the entire app (inference + reranker + orchestrator)
 ./deploy.sh
 
-# Or deploy individually
-./deploy.sh inference
-./deploy.sh orchestrator
+# Or directly
+modal deploy app.py
 ```
 
 ### View Logs
 
 ```bash
-modal app logs devfleet-inference
-modal app logs devfleet-orchestrator
+modal app logs devfleet
 ```
 
 ### Run Tests
 
 ```bash
-python -m pytest tests/ -v
+modal run tests/modal_test_runner.py
 ```
 
 ## Design Principles
 
 - **Frege's Compositionality**: Complex prompts are decomposed into a DAG of
-  atomic tasks using a small (7B) model, then executed independently.
+  atomic tasks using the 32B model, then scored against knowledge-graph
+  nodes using the Qwen3-Reranker to derive complexity/difficulty.
 - **Tri-Graph Memory**: Three NetworkX digraphs (Semantic, Procedural,
   Episodic) provide structured context for every LLM call.
+- **Dedicated Reranker**: Qwen3-Reranker-0.6B cross-encoder assesses
+  relevance between task DAG nodes and knowledge-graph nodes — no LLM
+  prompting for scoring.
+- **Modal-Native RPC**: All inter-container calls use ``.remote()`` —
+  no HTTP overhead, no idle timeouts, no service URLs to manage.
 - **Sandboxed Execution**: All code runs in ephemeral Modal Sandboxes — the
   host container is never at risk.
 - **Cold-Start Mitigation**: GPU memory snapshots serialize CPU+GPU state
