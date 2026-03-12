@@ -19,16 +19,13 @@ on:
           - inference
           - orchestrator
 
-# Use the GitHub environment that holds the Modal secrets
-env:
-  MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
-  MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
-
 jobs:
   validate:
     name: Validate Modal configs
     runs-on: ubuntu-latest
     environment: modal secrets
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -37,19 +34,18 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          pip install modal networkx pydantic httpx
+        run: pip install modal networkx pydantic httpx
 
       - name: Validate inference/server.py syntax & Modal API
         env:
-          MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
+          MODAL_TOKEN_ID: ${{ vars.DF_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ vars.DF_MODAL_TOKEN_SECRET }}
         run: python -c "import importlib.util; spec = importlib.util.spec_from_file_location('s', 'inference/server.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print('✓ inference/server.py')"
 
       - name: Validate orchestrator/core_app.py syntax & Modal API
         env:
-          MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
+          MODAL_TOKEN_ID: ${{ vars.DF_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ vars.DF_MODAL_TOKEN_SECRET }}
         run: python -c "import importlib.util; spec = importlib.util.spec_from_file_location('s', 'orchestrator/core_app.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print('✓ orchestrator/core_app.py')"
 
   deploy-inference:
@@ -57,6 +53,8 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     environment: modal secrets
+    permissions:
+      contents: read
     if: >-
       github.event_name == 'push' ||
       github.event.inputs.deploy_target == 'all' ||
@@ -73,15 +71,15 @@ jobs:
 
       - name: Deploy inference service (detached)
         env:
-          MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
+          MODAL_TOKEN_ID: ${{ vars.DF_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ vars.DF_MODAL_TOKEN_SECRET }}
         run: modal deploy inference/server.py --detach
 
       - name: Fetch deployment logs
         if: always()
         env:
-          MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
+          MODAL_TOKEN_ID: ${{ vars.DF_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ vars.DF_MODAL_TOKEN_SECRET }}
         run: modal app logs devfleet-inference --timeout 30 || true
 
   deploy-orchestrator:
@@ -89,6 +87,8 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     environment: modal secrets
+    permissions:
+      contents: read
     if: >-
       github.event_name == 'push' ||
       github.event.inputs.deploy_target == 'all' ||
@@ -105,15 +105,15 @@ jobs:
 
       - name: Deploy orchestrator service (detached)
         env:
-          MODAL_TOKEN_ID: ${{ secrets.AG_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.AG_MODAL_TOKEN_SECRET }}
+          MODAL_TOKEN_ID: ${{ vars.AG_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ vars.AG_MODAL_TOKEN_SECRET }}
         run: modal deploy orchestrator/core_app.py --detach
 
       - name: Fetch deployment logs
         if: always()
         env:
-          MODAL_TOKEN_ID: ${{ secrets.AG_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.AG_MODAL_TOKEN_SECRET }}
+          MODAL_TOKEN_ID: ${{ vars.AG_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ vars.AG_MODAL_TOKEN_SECRET }}
         run: modal app logs devfleet-orchestrator --timeout 30 || true
 
   smoke-test:
@@ -121,6 +121,8 @@ jobs:
     needs: [deploy-inference, deploy-orchestrator]
     runs-on: ubuntu-latest
     environment: modal secrets
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -133,7 +135,14 @@ jobs:
 
       - name: Run orchestrator smoke test on Modal
         env:
-          MODAL_TOKEN_ID: ${{ secrets.AG_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.AG_MODAL_TOKEN_SECRET }}
+          MODAL_TOKEN_ID: ${{ vars.AG_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ vars.AG_MODAL_TOKEN_SECRET }}
         run: |
           modal run orchestrator/core_app.py --prompt "Write a hello world function in Python"
+
+      - name: Run Modal-native unit tests
+        env:
+          MODAL_TOKEN_ID: ${{ vars.AG_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ vars.AG_MODAL_TOKEN_SECRET }}
+        run: |
+          modal run tests/modal_test_runner.py

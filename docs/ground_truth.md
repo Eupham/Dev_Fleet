@@ -77,9 +77,8 @@ modal app logs devfleet-orchestrator
 
 | Package | Purpose | Pinned Version |
 |---------|---------|----------------|
-| `vllm` | LLM inference engine | `>=0.6.0` |
-| `huggingface_hub` | Model download | `>=0.27.0` |
-| `hf-transfer` | Parallel HF downloads | latest |
+| `vllm` | LLM inference engine | `0.13.0` |
+| `huggingface_hub` | Model download | `0.36.0` |
 | `networkx` | Graph memory | `>=3.2` |
 | `pydantic` | Data validation / schemas | `>=2.5` |
 | `httpx` | HTTP client (service-to-service) | `>=0.27` |

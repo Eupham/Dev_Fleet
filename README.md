@@ -105,5 +105,6 @@ python -m pytest tests/ -v
   Episodic) provide structured context for every LLM call.
 - **Sandboxed Execution**: All code runs in ephemeral Modal Sandboxes — the
   host container is never at risk.
-- **Cold-Start Mitigation**: Model weights are pre-cached in Modal Volumes.
-  `--enforce-eager` skips JIT compilation for fast container boot.
+- **Cold-Start Mitigation**: GPU memory snapshots serialize CPU+GPU state
+  after warmup so containers restore instantly — no JIT compilation needed.
+  The GPU scales to zero when idle.
