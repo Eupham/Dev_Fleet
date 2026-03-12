@@ -97,3 +97,37 @@ modal run app.py --prompt "Write a hello world function"
 | `torch` | Reranker inference | `>=2.0` |
 | `networkx` | Graph memory | `>=3.2` |
 | `pydantic` | Data validation / schemas | `>=2.5` |
+
+## Modal 1.0+ Framework
+Dev Fleet operates on Modal (version 1.0 and beyond, currently targeting >= 1.3.5).
+
+### Architecture & Circular Imports
+- **Always separate `modal.App` initialization from the entrypoint.** Define `app = modal.App("devfleet")` in a lightweight file (e.g., `fleet_app.py`) and import it everywhere else. This prevents `ModuleNotFoundError` circular import bugs during GPU snapshotting.
+- **Never perform top-level orchestration imports inside UI endpoints.** If you need to trigger a Modal function from another, use `.remote()` or `.remote.aio()`, and make sure the `Image` running the calling function explicitly includes the source code via `.add_local_python_source("module_name", copy=True)`.
+
+### Deprecations in 1.0
+- **`modal.Mount` is deprecated.** Do not use `Mount.from_local_dir` or `Mount.from_local_python_packages` in the `mount=` or `mounts=` arguments of `@app.function()`.
+- **Modern File/Source Inclusion:** Bind files and packages strictly to the `modal.Image`.
+  * **❌ Bad (Deprecated):** `@app.function(image=image, mount=modal.Mount.from_local_python_packages("my_lib"))`
+  * **✅ Good (Modern 1.0):** `image = modal.Image.debian_slim().add_local_python_source("my_lib")`
+- **Important:** When chaining `add_local_*` commands with `.run_commands()` or `.pip_install()`, make sure `add_local_*` are called **last**, or use `copy=True` if subsequent build steps depend on those files.
+
+### Asynchronous Contexts
+- As of Modal 1.3.3, async warnings are enabled by default and will raise errors or warnings if a synchronous blocking method is used inside an `async def`.
+- **Always use `.aio()` inside `async def`:**
+  * **❌ Bad:** `result = my_modal_func.remote(prompt)` (blocks event loop)
+  * **✅ Good:** `result = await my_modal_func.remote.aio(prompt)`
+
+## FastAPI
+- Use FastAPI for web interfaces hosted via `@modal.asgi_app()`.
+- Ensure endpoints are properly tagged as `async def` where I/O bound.
+- Combine FastAPI with Jinja2 (`from jinja2 import Template`) for lightweight SSR when complex JS frameworks are not needed.
+
+## Pydantic v2
+- The orchestrator relies on Pydantic `^2.5` for structural validation.
+- Do not use Pydantic v1 methods (e.g., `BaseModel.dict()`, `BaseModel.parse_raw()`).
+- **✅ Good (Pydantic v2):** Use `BaseModel.model_dump()` and `BaseModel.model_validate_json()`.
+
+## NetworkX
+- The Tri-Graph memory subsystem uses NetworkX `^3.2` to represent the semantic, procedural, and episodic graphs.
+- Use `nx.DiGraph()` for directed edges. Maintain lightweight attributes on nodes to allow fast cross-encoder (Qwen3-Reranker) scoring against the graph nodes.

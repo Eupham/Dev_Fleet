@@ -33,6 +33,7 @@ RERANK_INSTRUCTION = (
 
 reranker_image = (
     modal.Image.debian_slim(python_version="3.12")
+    .add_local_python_source("fleet_app", copy=True)
     .pip_install(
         "torch>=2.0",
         "transformers>=4.51.0",

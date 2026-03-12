@@ -35,6 +35,9 @@ logger = logging.getLogger("devfleet.orchestrator")
 
 orchestrator_image = (
     modal.Image.debian_slim(python_version="3.12")
+    .add_local_python_source("fleet_app", copy=True)
+    .add_local_python_source("inference", copy=True)
+    .add_local_python_source("orchestrator", copy=True)
     .pip_install(
         "networkx>=3.2",
         "pydantic>=2.5",
@@ -80,6 +83,7 @@ def log_event(event_type: str, payload: dict | None = None) -> None:
         "/workspace": workspace_vol,
     },
     timeout=30 * 60,
+    retries=0,
 )
 def run_agent(user_prompt: str) -> dict:
     """Execute a single agent loop iteration for *user_prompt*.
