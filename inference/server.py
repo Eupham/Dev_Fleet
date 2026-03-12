@@ -1,21 +1,22 @@
-"""Microservice A — vLLM Inference Engine with GPU Memory Snapshots.
+"""Inference Engine — vLLM with GPU Memory Snapshots.
 
 Hosts Qwen/Qwen2.5-Coder-32B-Instruct behind an OpenAI-compatible API on
 a single A100-80 GB GPU.  Model weights are cached in Modal Volumes.
 GPU memory snapshots eliminate cold-start JIT compilation overhead so we
 never need to keep a GPU warm (scales to zero).
 
-Deployment:
-    modal deploy inference/server.py
-
-Logs:
-    modal app logs devfleet-inference
+The ``Inference`` class exposes two interfaces:
+  * ``@modal.web_server`` — external OpenAI-compatible HTTP endpoint.
+  * ``@modal.method`` (``generate``) — Modal-native RPC used by the
+    orchestrator, avoiding HTTP overhead and idle-timeout waste.
 """
 
 import socket
 import subprocess
 
 import modal
+
+from app import app  # shared app defined in app.py
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -26,7 +27,7 @@ VLLM_PORT = 8000
 N_GPU = 1
 
 MODEL_NAME = "Qwen/Qwen2.5-Coder-32B-Instruct"
-SERVED_MODEL_NAME = "llm"  # short alias used by Microservice B
+SERVED_MODEL_NAME = "llm"  # short alias used by the orchestrator
 
 # ---------------------------------------------------------------------------
 # Container image — vLLM + HuggingFace tooling
@@ -62,15 +63,6 @@ with vllm_image.imports():
 
 hf_cache_vol = modal.Volume.from_name("hf-cache-vol", create_if_missing=True)
 vllm_cache_vol = modal.Volume.from_name("vllm-cache-vol", create_if_missing=True)
-
-# ---------------------------------------------------------------------------
-# Modal App
-# ---------------------------------------------------------------------------
-
-app = modal.App(
-    "devfleet-inference",
-    secrets=[modal.Secret.from_name("devfleet-modal-secrets")],
-)
 
 # ---------------------------------------------------------------------------
 # Snapshot helpers
@@ -166,19 +158,45 @@ class Inference:
             "8192",
         ]
 
-        print("[devfleet-inference] Starting vLLM:", " ".join(cmd))
+        print("[devfleet] Starting vLLM:", " ".join(cmd))
         self.proc = subprocess.Popen(cmd)
         _wait_ready(self.proc)
         _warmup()
         _sleep()
-        print("[devfleet-inference] Snapshot ready — server asleep.")
+        print("[devfleet] Snapshot ready — server asleep.")
 
     @modal.enter(snap=False)
     def restore(self):
         """Wake the server back up after restoring from a GPU snapshot."""
         _wake_up()
         _wait_ready(self.proc)
-        print("[devfleet-inference] Restored from snapshot — server live.")
+        print("[devfleet] Restored from snapshot — server live.")
+
+    @modal.method()
+    def generate(
+        self,
+        messages: list[dict[str, str]],
+        model: str = "llm",
+        temperature: float = 0.3,
+        max_tokens: int = 4096,
+    ) -> str:
+        """Modal-native RPC — called by the orchestrator via ``.remote()``.
+
+        Forwards the request to the local vLLM subprocess and returns
+        the generated text directly.  No external HTTP round-trip.
+        """
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        resp = requests.post(
+            f"http://localhost:{VLLM_PORT}/v1/chat/completions",
+            json=payload,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
 
     @modal.web_server(port=VLLM_PORT, startup_timeout=10 * MINUTES)
     def serve(self):

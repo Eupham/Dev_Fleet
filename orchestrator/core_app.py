@@ -1,14 +1,9 @@
-"""Microservice B — Tri-Graph Orchestrator (Modal App definition).
+"""Orchestrator — Tri-Graph agent loop (CPU container).
 
-Hosts the 7B decomposition/reranking model on an L40S GPU and
-coordinates graph memory, Frege parsing, reranking, sandbox execution,
-and the main agent loop.
-
-Deployment:
-    modal deploy orchestrator/core_app.py
-
-Logs:
-    modal app logs devfleet-orchestrator
+Coordinates graph memory, Frege parsing, Qwen3-Reranker scoring,
+sandbox execution, and the main agent loop.  All inference calls
+use Modal-native RPC to the Inference and Reranker classes within
+the same ``devfleet`` app — no HTTP overhead or idle timeouts.
 """
 
 from __future__ import annotations
@@ -19,6 +14,8 @@ import sys
 from datetime import datetime, timezone
 
 import modal
+
+from app import app  # shared app defined in app.py
 
 # ---------------------------------------------------------------------------
 # Logging — all critical state goes to stdout for `modal app logs`
@@ -41,7 +38,6 @@ orchestrator_image = (
     .pip_install(
         "networkx>=3.2",
         "pydantic>=2.5",
-        "httpx>=0.27",
     )
 )
 
@@ -54,15 +50,6 @@ graph_state_vol = modal.Volume.from_name(
 )
 workspace_vol = modal.Volume.from_name(
     "devfleet-workspace", create_if_missing=True
-)
-
-# ---------------------------------------------------------------------------
-# Modal App
-# ---------------------------------------------------------------------------
-
-app = modal.App(
-    "devfleet-orchestrator",
-    secrets=[modal.Secret.from_name("devfleet-modal-secrets")],
 )
 
 
@@ -82,7 +69,7 @@ def log_event(event_type: str, payload: dict | None = None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator entrypoint — invoked via `modal run` or scheduled
+# Orchestrator entrypoint — invoked via `modal run app.py`
 # ---------------------------------------------------------------------------
 
 
@@ -94,16 +81,13 @@ def log_event(event_type: str, payload: dict | None = None) -> None:
     },
     timeout=30 * 60,
 )
-def run_agent(user_prompt: str, inference_url: str) -> dict:
+def run_agent(user_prompt: str) -> dict:
     """Execute a single agent loop iteration for *user_prompt*.
 
     Parameters
     ----------
     user_prompt:
         The natural-language task from the user.
-    inference_url:
-        Base URL of the deployed vLLM inference service
-        (e.g. ``https://…--devfleet-inference-serve.modal.run``).
 
     Returns
     -------
@@ -113,22 +97,7 @@ def run_agent(user_prompt: str, inference_url: str) -> dict:
 
     log_event("agent_start", {"prompt": user_prompt[:200]})
 
-    result = agent_loop(user_prompt, inference_url)
+    result = agent_loop(user_prompt)
 
     log_event("agent_complete", {"nodes": len(result.get("nodes", []))})
     return result
-
-
-@app.local_entrypoint()
-def main(
-    prompt: str = "Write a Python function that sorts a list using merge sort.",
-    inference_url: str = "",
-):
-    """CLI entrypoint for quick testing: ``modal run orchestrator/core_app.py``."""
-    if not inference_url:
-        print(
-            "WARNING: --inference-url not provided; the agent will not be "
-            "able to reach the 32B model for generation."
-        )
-    result = run_agent.remote(prompt, inference_url)
-    print(json.dumps(result, indent=2))

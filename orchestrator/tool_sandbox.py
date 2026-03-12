@@ -66,9 +66,7 @@ def execute_in_sandbox(
         "devfleet-workspace", create_if_missing=True
     )
 
-    app_ref = modal.App.lookup(
-        "devfleet-orchestrator", create_if_missing=True
-    )
+    app_ref = modal.App.lookup("devfleet", create_if_missing=True)
 
     sandbox = modal.Sandbox.create(
         app=app_ref,
