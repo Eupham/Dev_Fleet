@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import modal
 
-from app import app
+from fleet_app import app
 
 # ---------------------------------------------------------------------------
 # Constants

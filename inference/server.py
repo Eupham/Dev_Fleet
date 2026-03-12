@@ -16,7 +16,7 @@ import subprocess
 
 import modal
 
-from app import app  # shared app defined in app.py
+from fleet_app import app  # shared app defined in app.py
 
 # ---------------------------------------------------------------------------
 # Constants

@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 import modal
 
-from app import app  # shared app defined in app.py
+from fleet_app import app  # shared app defined in app.py
 
 # ---------------------------------------------------------------------------
 # Logging — all critical state goes to stdout for `modal app logs`

@@ -15,7 +15,7 @@ import json
 
 import modal
 
-app = modal.App("devfleet")
+from fleet_app import app
 
 # Register all functions / classes by importing their modules.
 # Each module does ``from app import app`` and decorates its own
@@ -23,6 +23,7 @@ app = modal.App("devfleet")
 import inference.server  # noqa: E402 — registers Inference class
 import inference.reranker  # noqa: E402 — registers Reranker class
 import orchestrator.core_app  # noqa: E402 — registers run_agent
+import ui.web  # noqa: E402 — registers UI web endpoint
 
 
 @app.local_entrypoint()
