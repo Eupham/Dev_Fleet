@@ -4,8 +4,8 @@ Hosts the 7B decomposition/reranking model on an L40S GPU and
 coordinates graph memory, Frege parsing, reranking, sandbox execution,
 and the main agent loop.
 
-Deployment (detached):
-    modal deploy orchestrator/core_app.py --detach
+Deployment:
+    modal deploy orchestrator/core_app.py
 
 Logs:
     modal app logs devfleet-orchestrator

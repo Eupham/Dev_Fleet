@@ -62,11 +62,11 @@ These are injected via `modal.Secret.from_name()` within each app definition.
 ## Deployment Commands
 
 ```bash
-# Deploy inference engine (detached — does not block terminal)
-modal deploy inference/server.py --detach
+# Deploy inference engine
+modal deploy inference/server.py
 
-# Deploy orchestrator (detached)
-modal deploy orchestrator/core_app.py --detach
+# Deploy orchestrator
+modal deploy orchestrator/core_app.py
 
 # Retrieve logs
 modal app logs devfleet-inference

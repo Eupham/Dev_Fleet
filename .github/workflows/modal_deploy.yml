@@ -38,14 +38,14 @@ jobs:
 
       - name: Validate inference/server.py syntax & Modal API
         env:
-          MODAL_TOKEN_ID: ${{ vars.DF_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ vars.DF_MODAL_TOKEN_SECRET }}
+          MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
         run: python -c "import importlib.util; spec = importlib.util.spec_from_file_location('s', 'inference/server.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print('✓ inference/server.py')"
 
       - name: Validate orchestrator/core_app.py syntax & Modal API
         env:
-          MODAL_TOKEN_ID: ${{ vars.DF_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ vars.DF_MODAL_TOKEN_SECRET }}
+          MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
         run: python -c "import importlib.util; spec = importlib.util.spec_from_file_location('s', 'orchestrator/core_app.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print('✓ orchestrator/core_app.py')"
 
   deploy-inference:
@@ -69,18 +69,18 @@ jobs:
       - name: Install Modal
         run: pip install modal
 
-      - name: Deploy inference service (detached)
+      - name: Deploy inference service
         env:
-          MODAL_TOKEN_ID: ${{ vars.DF_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ vars.DF_MODAL_TOKEN_SECRET }}
-        run: modal deploy inference/server.py --detach
+          MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
+        run: modal deploy inference/server.py
 
       - name: Fetch deployment logs
         if: always()
         env:
-          MODAL_TOKEN_ID: ${{ vars.DF_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ vars.DF_MODAL_TOKEN_SECRET }}
-        run: modal app logs devfleet-inference --timeout 30 || true
+          MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
+        run: timeout 30 modal app logs devfleet-inference || true
 
   deploy-orchestrator:
     name: Deploy Orchestrator to Modal
@@ -103,18 +103,18 @@ jobs:
       - name: Install Modal + deps
         run: pip install modal networkx pydantic httpx
 
-      - name: Deploy orchestrator service (detached)
+      - name: Deploy orchestrator service
         env:
-          MODAL_TOKEN_ID: ${{ vars.AG_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ vars.AG_MODAL_TOKEN_SECRET }}
-        run: modal deploy orchestrator/core_app.py --detach
+          MODAL_TOKEN_ID: ${{ secrets.AG_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.AG_MODAL_TOKEN_SECRET }}
+        run: modal deploy orchestrator/core_app.py
 
       - name: Fetch deployment logs
         if: always()
         env:
-          MODAL_TOKEN_ID: ${{ vars.AG_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ vars.AG_MODAL_TOKEN_SECRET }}
-        run: modal app logs devfleet-orchestrator --timeout 30 || true
+          MODAL_TOKEN_ID: ${{ secrets.AG_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.AG_MODAL_TOKEN_SECRET }}
+        run: timeout 30 modal app logs devfleet-orchestrator || true
 
   smoke-test:
     name: Smoke test on Modal
@@ -135,14 +135,14 @@ jobs:
 
       - name: Run orchestrator smoke test on Modal
         env:
-          MODAL_TOKEN_ID: ${{ vars.AG_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ vars.AG_MODAL_TOKEN_SECRET }}
+          MODAL_TOKEN_ID: ${{ secrets.AG_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.AG_MODAL_TOKEN_SECRET }}
         run: |
           modal run orchestrator/core_app.py --prompt "Write a hello world function in Python"
 
       - name: Run Modal-native unit tests
         env:
-          MODAL_TOKEN_ID: ${{ vars.AG_MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ vars.AG_MODAL_TOKEN_SECRET }}
+          MODAL_TOKEN_ID: ${{ secrets.AG_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.AG_MODAL_TOKEN_SECRET }}
         run: |
           modal run tests/modal_test_runner.py

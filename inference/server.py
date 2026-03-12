@@ -5,8 +5,8 @@ a single A100-80 GB GPU.  Model weights are cached in Modal Volumes.
 GPU memory snapshots eliminate cold-start JIT compilation overhead so we
 never need to keep a GPU warm (scales to zero).
 
-Deployment (detached):
-    modal deploy inference/server.py --detach
+Deployment:
+    modal deploy inference/server.py
 
 Logs:
     modal app logs devfleet-inference

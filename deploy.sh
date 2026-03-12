@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# deploy.sh — Deploy both Dev Fleet microservices on Modal (detached).
+# deploy.sh — Deploy both Dev Fleet microservices on Modal.
 #
 # Usage:
 #   ./deploy.sh              # deploy both services
@@ -14,14 +14,14 @@ set -euo pipefail
 
 deploy_inference() {
     echo ">>> Deploying Microservice A (Inference Engine) …"
-    modal deploy inference/server.py --detach
-    echo ">>> Inference engine deployment started (detached)."
+    modal deploy inference/server.py
+    echo ">>> Inference engine deployed."
 }
 
 deploy_orchestrator() {
     echo ">>> Deploying Microservice B (Orchestrator) …"
-    modal deploy orchestrator/core_app.py --detach
-    echo ">>> Orchestrator deployment started (detached)."
+    modal deploy orchestrator/core_app.py
+    echo ">>> Orchestrator deployed."
 }
 
 case "${1:-all}" in
