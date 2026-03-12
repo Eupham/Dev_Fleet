@@ -1,6 +1,6 @@
 """Inference Engine — vLLM with GPU Memory Snapshots.
 
-Hosts Qwen/Qwen2.5-Coder-32B-Instruct behind an OpenAI-compatible API on
+Hosts Qwen/Qwen2.5-Coder-0.5B-Instruct behind an OpenAI-compatible API on
 a single A100-80 GB GPU.  Model weights are cached in Modal Volumes.
 GPU memory snapshots eliminate cold-start JIT compilation overhead so we
 never need to keep a GPU warm (scales to zero).
@@ -13,10 +13,11 @@ The ``Inference`` class exposes two interfaces:
 
 import socket
 import subprocess
+import time
 
 import modal
 
-from app import app  # shared app defined in app.py
+from fleet_app import app  # shared app defined in app.py
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -26,7 +27,7 @@ MINUTES = 60  # seconds
 VLLM_PORT = 8000
 N_GPU = 1
 
-MODEL_NAME = "Qwen/Qwen2.5-Coder-32B-Instruct"
+MODEL_NAME = "Qwen/Qwen2.5-Coder-0.5B-Instruct"
 SERVED_MODEL_NAME = "llm"  # short alias used by the orchestrator
 
 # ---------------------------------------------------------------------------
@@ -38,17 +39,20 @@ vllm_image = (
         "nvidia/cuda:12.9.0-devel-ubuntu22.04", add_python="3.12"
     )
     .entrypoint([])
+    .add_local_python_source("fleet_app", copy=True)
     .uv_pip_install(
-        "vllm==0.13.0",
+        "vllm==0.7.3",
         "huggingface-hub==0.36.0",
+        "hf_transfer",
     )
     .env(
         {
             "HF_HUB_ENABLE_HF_TRANSFER": "1",
             "HF_XET_HIGH_PERFORMANCE": "1",
-            # Required for GPU snapshot compatibility
-            "VLLM_SERVER_DEV_MODE": "1",
+            "VLLM_SERVER_DEV_MODE": "0",
             "TORCHINDUCTOR_COMPILE_THREADS": "1",
+            # Required for snapshot survival without NCCL socket crashes
+            "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
         }
     )
 )
@@ -68,16 +72,19 @@ vllm_cache_vol = modal.Volume.from_name("vllm-cache-vol", create_if_missing=True
 # Snapshot helpers
 # ---------------------------------------------------------------------------
 
-
 def _wait_ready(proc: subprocess.Popen) -> None:
     """Busy-poll until the vLLM server is accepting connections."""
     while True:
         try:
             socket.create_connection(("localhost", VLLM_PORT), timeout=1).close()
-            return
-        except OSError:
+            # Double check with an HTTP health endpoint
+            resp = requests.get(f"http://localhost:{VLLM_PORT}/health", timeout=5)
+            if resp.status_code == 200:
+                return
+        except (OSError, requests.exceptions.RequestException):
             if proc.poll() is not None:
                 raise RuntimeError(f"vLLM exited with code {proc.returncode}")
+            time.sleep(1)
 
 
 def _warmup() -> None:
@@ -94,21 +101,6 @@ def _warmup() -> None:
             timeout=300,
         ).raise_for_status()
 
-
-def _sleep() -> None:
-    """Offload model weights to CPU and empty the KV cache before snapshot."""
-    requests.post(
-        f"http://localhost:{VLLM_PORT}/sleep?level=1"
-    ).raise_for_status()
-
-
-def _wake_up() -> None:
-    """Reload model weights onto GPU after snapshot restore."""
-    requests.post(
-        f"http://localhost:{VLLM_PORT}/wake_up"
-    ).raise_for_status()
-
-
 # ---------------------------------------------------------------------------
 # vLLM Server class with GPU memory snapshots (scales to zero)
 # ---------------------------------------------------------------------------
@@ -116,9 +108,10 @@ def _wake_up() -> None:
 
 @app.cls(
     image=vllm_image,
-    gpu=f"A100-80GB:{N_GPU}",
+    gpu="T4",
     scaledown_window=5 * MINUTES,
     timeout=10 * MINUTES,
+    retries=0,
     volumes={
         "/root/.cache/huggingface": hf_cache_vol,
         "/root/.cache/vllm": vllm_cache_vol,
@@ -132,7 +125,7 @@ class Inference:
 
     @modal.enter(snap=True)
     def start(self):
-        """Start vLLM, warm up, then sleep before the snapshot is taken."""
+        """Start vLLM, warm up, and snapshot."""
         cmd = [
             "vllm",
             "serve",
@@ -149,7 +142,8 @@ class Inference:
             "--gpu-memory-utilization",
             "0.90",
             # Snapshot-specific flags
-            "--enable-sleep-mode",
+            "--enforce-eager",
+            "--dtype=half",
             "--max-num-seqs",
             "4",
             "--max-model-len",
@@ -162,13 +156,11 @@ class Inference:
         self.proc = subprocess.Popen(cmd)
         _wait_ready(self.proc)
         _warmup()
-        _sleep()
-        print("[devfleet] Snapshot ready — server asleep.")
+        print("[devfleet] Snapshot ready — capturing full GPU memory including weights.")
 
     @modal.enter(snap=False)
     def restore(self):
-        """Wake the server back up after restoring from a GPU snapshot."""
-        _wake_up()
+        """Resume server live after restoring from a GPU snapshot."""
         _wait_ready(self.proc)
         print("[devfleet] Restored from snapshot — server live.")
 
@@ -205,4 +197,3 @@ class Inference:
     @modal.exit()
     def stop(self):
         self.proc.terminate()
-
