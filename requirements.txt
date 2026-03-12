@@ -1,0 +1,12 @@
+# Core Modal SDK
+modal>=0.73.0
+
+# Graph / orchestration
+networkx>=3.2
+pydantic>=2.5
+
+# HTTP client for inter-service calls
+httpx>=0.27
+
+# Testing
+pytest>=8.0
