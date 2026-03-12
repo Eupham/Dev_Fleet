@@ -57,7 +57,9 @@ Four secrets stored in GitHub environment **"modal secrets"**:
 | `AG_MODAL_TOKEN_ID` | Orchestrator service token ID |
 | `AG_MODAL_TOKEN_SECRET` | Orchestrator service token secret |
 
-These are injected via `modal.Secret.from_name()` within each app definition.
+These are injected as `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` environment
+variables by the GitHub Actions workflow.  No Modal-side secret group is
+required.
 
 ## Deployment Commands
 

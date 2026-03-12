@@ -67,10 +67,7 @@ vllm_cache_vol = modal.Volume.from_name("vllm-cache-vol", create_if_missing=True
 # Modal App
 # ---------------------------------------------------------------------------
 
-app = modal.App(
-    "devfleet-inference",
-    secrets=[modal.Secret.from_name("devfleet-modal-secrets")],
-)
+app = modal.App("devfleet-inference")
 
 # ---------------------------------------------------------------------------
 # Snapshot helpers

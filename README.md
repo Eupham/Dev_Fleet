@@ -64,10 +64,12 @@ pip install -r requirements.txt
 
 ### Configure Modal Secrets
 
-Create a Modal secret group named `devfleet-modal-secrets` containing:
+Modal authentication is handled via GitHub environment secrets in the
+`modal secrets` environment.  The workflow sets `MODAL_TOKEN_ID` /
+`MODAL_TOKEN_SECRET` automatically — no Modal-side secret group is needed.
 
-| Key | Description |
-|-----|-------------|
+| GitHub Secret | Purpose |
+|---------------|---------|
 | `DF_MODAL_TOKEN_ID` | Inference service token ID |
 | `DF_MODAL_TOKEN_SECRET` | Inference service token secret |
 | `AG_MODAL_TOKEN_ID` | Orchestrator service token ID |

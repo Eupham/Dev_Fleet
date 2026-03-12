@@ -60,10 +60,7 @@ workspace_vol = modal.Volume.from_name(
 # Modal App
 # ---------------------------------------------------------------------------
 
-app = modal.App(
-    "devfleet-orchestrator",
-    secrets=[modal.Secret.from_name("devfleet-modal-secrets")],
-)
+app = modal.App("devfleet-orchestrator")
 
 
 # ---------------------------------------------------------------------------
