@@ -3,8 +3,15 @@ from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse
 from fleet_app import app
 
-# Create a lightweight CPU image for the web UI
-web_image = modal.Image.debian_slim(python_version="3.12").pip_install("fastapi", "uvicorn", "jinja2", "python-multipart")
+# Create a lightweight CPU image for the web UI. We explicitly add the fleet_app, orchestrator, and inference modules
+# to ensure we can import and invoke the orchestrator function.
+web_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .pip_install("fastapi", "uvicorn", "jinja2", "python-multipart", "pydantic>=2.5", "networkx>=3.2")
+    .add_local_python_source("fleet_app")
+    .add_local_python_source("orchestrator")
+    .add_local_python_source("inference")
+)
 
 web_app = FastAPI()
 
@@ -49,8 +56,8 @@ async def home():
 async def run(prompt: str = Form(...)):
     from orchestrator.core_app import run_agent
 
-    # Call the orchestrator remotely
-    result = run_agent.remote(prompt)
+    # Call the orchestrator remotely via aio to prevent blocking the async event loop
+    result = await run_agent.remote.aio(prompt)
 
     import json
     formatted_result = json.dumps(result, indent=2)
