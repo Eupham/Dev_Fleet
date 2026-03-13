@@ -184,25 +184,63 @@ class TriGraphMemory:
     # -- Property Graph ingestion --------------------------------------------
 
     def _ingest_node_to_pg(self, node_id: str, attrs: dict[str, Any], graph_type: str):
-        """Ingest dictionary data into LlamaIndex PropertyGraphIndex."""
-        text_content = json.dumps(attrs, default=str)
-        doc = Document(text=text_content, metadata={"node_id": node_id, "graph_type": graph_type})
+        """Ingest explicitly constructed EntityNodes to bypass LLM extraction."""
+        from llama_index.core.graph_stores.types import KG_NODES_KEY
+        from llama_index.core.schema import TextNode
+
         if self.property_graph is None:
-            self.property_graph = PropertyGraphIndex.from_documents([doc])
-        else:
-            self.property_graph.insert(doc)
+            self.property_graph = PropertyGraphIndex.from_existing(
+                property_graph_store=SimplePropertyGraphStore(),
+                kg_extractors=[],
+            )
+
+        text_content = f"[{graph_type.capitalize()}] {node_id}: {json.dumps(attrs, default=str)}"
+        llama_node = TextNode(text=text_content, metadata={"node_id": node_id, "graph_type": graph_type})
+
+        # Pass the extracted entity directly into LlamaIndex bypassing the extractors
+        entity_node = EntityNode(
+            name=node_id,
+            label=graph_type,
+            properties={"node_id": node_id, "graph_type": graph_type, **attrs}
+        )
+        llama_node.metadata[KG_NODES_KEY] = [entity_node]
+        self.property_graph.insert_nodes([llama_node])
 
     def _rebuild_property_graph(self):
-        docs = []
-        for node, data in self.semantic.nodes(data=True):
-            docs.append(Document(text=json.dumps(data, default=str), metadata={"node_id": node, "graph_type": "semantic"}))
-        for node, data in self.procedural.nodes(data=True):
-            docs.append(Document(text=json.dumps(data, default=str), metadata={"node_id": node, "graph_type": "procedural"}))
+        from llama_index.core.graph_stores.types import KG_NODES_KEY
+        from llama_index.core.schema import TextNode
 
-        if docs:
-            self.property_graph = PropertyGraphIndex.from_documents(docs)
-        else:
-            self.property_graph = PropertyGraphIndex.from_documents([])
+        self.property_graph = PropertyGraphIndex.from_existing(
+            property_graph_store=SimplePropertyGraphStore(),
+            kg_extractors=[],
+        )
+
+        nodes_to_insert = []
+
+        for node, data in self.semantic.nodes(data=True):
+            text_content = f"[Semantic] {node}: {json.dumps(data, default=str)}"
+            llama_node = TextNode(text=text_content, metadata={"node_id": node, "graph_type": "semantic"})
+            entity_node = EntityNode(
+                name=node,
+                label="semantic",
+                properties={"node_id": node, "graph_type": "semantic", **data}
+            )
+            llama_node.metadata[KG_NODES_KEY] = [entity_node]
+            nodes_to_insert.append(llama_node)
+
+        for node, data in self.procedural.nodes(data=True):
+            text_content = f"[Procedural] {node}: {json.dumps(data, default=str)}"
+            llama_node = TextNode(text=text_content, metadata={"node_id": node, "graph_type": "procedural"})
+            entity_node = EntityNode(
+                name=node,
+                label="procedural",
+                properties={"node_id": node, "graph_type": "procedural", **data}
+            )
+            llama_node.metadata[KG_NODES_KEY] = [entity_node]
+            nodes_to_insert.append(llama_node)
+
+        if nodes_to_insert:
+            self.property_graph.insert_nodes(nodes_to_insert)
 
     # -- GraphRAG context builder --------------------------------------------
 
