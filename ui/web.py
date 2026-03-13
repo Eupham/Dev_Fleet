@@ -54,8 +54,9 @@ try:
         final_graph_markdown = ""
 
         # Iterate over the generator from Modal
+        _gen = run_agent_stream_func.remote_gen.aio(prompt)
         try:
-            async for update in run_agent_stream_func.remote_gen.aio(prompt):
+            async for update in _gen:
                 step_name = update["step"]
                 state_snapshot = update["state_snapshot"]
                 graphs_dict = update["graphs"]
@@ -119,14 +120,14 @@ try:
                 graph_markdown = "\n".join(mermaid_lines)
                 final_graph_markdown = graph_markdown  # persist latest state for finalize
 
-                # Use Chainlit's native Mermaid element instead of markdown code blocks
-                graph_msg.content = f"*Executing Node: {step_name}...*"
-                graph_msg.elements = [cl.Mermaid(content=graph_markdown)]
+                # Render Mermaid diagram as a fenced code block (Chainlit renders it natively)
+                graph_msg.content = f"*Executing Node: {step_name}...*\n\n```mermaid\n{graph_markdown}\n```"
+                graph_msg.elements = []
                 await graph_msg.update()
 
-            # Finalize — preserve the last rendered graph as a Mermaid element
-            graph_msg.content = "**Execution Complete. Final Graph State:**"
-            graph_msg.elements = [cl.Mermaid(content=final_graph_markdown)]
+            # Finalize — preserve the last rendered graph
+            graph_msg.content = f"**Execution Complete. Final Graph State:**\n\n```mermaid\n{final_graph_markdown}\n```" if final_graph_markdown else "**Execution Complete.**"
+            graph_msg.elements = []
             await graph_msg.update()
             await cl.Message(content="Task completed successfully.").send()
 
@@ -135,8 +136,12 @@ try:
             # whatever was rendered so far rather than leaving the UI in a loading state.
             graph_msg.content = f"**Stream ended: {type(e).__name__}**"
             if final_graph_markdown:
-                graph_msg.elements = [cl.Mermaid(content=final_graph_markdown)]
+                graph_msg.content += f"\n\n```mermaid\n{final_graph_markdown}\n```"
+            graph_msg.elements = []
             await graph_msg.update()
+        finally:
+            # Always close the Modal generator so GeneratorExit is not silently ignored
+            await _gen.aclose()
 
 except ImportError:
     # This prevents CI pipelines and local modal deploys from failing when chainlit is not installed globally.
