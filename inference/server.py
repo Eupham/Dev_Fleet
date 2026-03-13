@@ -64,6 +64,8 @@ vllm_image = (
             "NCCL_WARN_DISABLE": "1",
             # Keep vLLM logs at WARNING to reduce modal app logs noise
             "VLLM_LOGGING_LEVEL": "WARNING",
+            # Model is baked into the image at build time; skip hub network calls at runtime
+            "HF_HUB_OFFLINE": "1",
         }
     )
 )
