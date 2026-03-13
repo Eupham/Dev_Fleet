@@ -26,7 +26,7 @@ embedder_image = (
         "sentence-transformers>=2.0.0",
         "huggingface-hub",
     )
-    .add_local_python_source("fleet_app")
+    .add_local_python_source("fleet_app", copy=True)
 )
 
 
