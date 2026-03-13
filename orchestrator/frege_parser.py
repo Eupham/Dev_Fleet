@@ -25,7 +25,7 @@ class AtomicTaskNode(BaseModel):
     """A single indivisible task produced by Frege decomposition."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
-    description: str = Field(..., max_length=500)
+    description: str = Field(...)
     depends_on: list[str] = Field(
         default_factory=list,
         description="IDs of tasks this node depends on (DAG edges).",
