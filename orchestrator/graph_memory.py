@@ -16,6 +16,18 @@ from typing import Any
 
 import networkx as nx
 
+from llama_index.core import PropertyGraphIndex
+from llama_index.core import Document, Settings
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+
+# Configure local HuggingFace embedding model globally using Qwen3 collection.
+Settings.embed_model = HuggingFaceEmbedding(model_name="Qwen/Qwen3-Embedding-0.6B")
+
+# Configure custom LlamaIndex LLM to use Modal vLLM
+from orchestrator.llm_client import ModalVLLM
+Settings.llm = ModalVLLM()
+
+
 # ---------------------------------------------------------------------------
 # Persistence paths (inside the mounted Modal Volume at /state)
 # ---------------------------------------------------------------------------
@@ -34,11 +46,18 @@ EPISODIC_PATH = STATE_DIR / "episodic_graph.json"
 
 @dataclass
 class TriGraphMemory:
-    """Container for three distinct knowledge graphs."""
+    """Container for three distinct knowledge graphs and a LlamaIndex PropertyGraph."""
 
     semantic: nx.DiGraph = field(default_factory=nx.DiGraph)
     procedural: nx.DiGraph = field(default_factory=nx.DiGraph)
     episodic: nx.DiGraph = field(default_factory=nx.DiGraph)
+
+    # Exclude property_graph from normal dataclass initialization
+    property_graph: Any = field(default=None, repr=False, init=False)
+
+    def __post_init__(self):
+        # Initialize an empty Property Graph using the global HF embeddings and Modal vLLM.
+        self.property_graph = PropertyGraphIndex.from_documents([])
 
     # -- Serialization -------------------------------------------------------
 
@@ -65,6 +84,9 @@ class TriGraphMemory:
             if path.exists():
                 data = json.loads(path.read_text())
                 setattr(mem, attr, nx.node_link_graph(data))
+
+        # After loading networkx, rebuild PropertyGraph from Semantic/Procedural
+        mem._rebuild_property_graph()
         return mem
 
     # -- Episodic helpers ----------------------------------------------------
@@ -87,6 +109,8 @@ class TriGraphMemory:
         self, node_id: str, attrs: dict[str, Any]
     ) -> None:
         self.semantic.add_node(node_id, **attrs)
+        # Also ingest into property graph
+        self._ingest_node_to_pg(node_id, attrs, "semantic")
 
     # -- Procedural helpers --------------------------------------------------
 
@@ -94,15 +118,40 @@ class TriGraphMemory:
         self, node_id: str, attrs: dict[str, Any]
     ) -> None:
         self.procedural.add_node(node_id, **attrs)
+        # Also ingest into property graph
+        self._ingest_node_to_pg(node_id, attrs, "procedural")
+
+
+    # -- Property Graph ingestion --------------------------------------------
+
+    def _ingest_node_to_pg(self, node_id: str, attrs: dict[str, Any], graph_type: str):
+        """Ingest dictionary data into LlamaIndex PropertyGraphIndex."""
+        text_content = json.dumps(attrs, default=str)
+        doc = Document(text=text_content, metadata={"node_id": node_id, "graph_type": graph_type})
+        if self.property_graph is None:
+            self.property_graph = PropertyGraphIndex.from_documents([doc])
+        else:
+            self.property_graph.insert(doc)
+
+    def _rebuild_property_graph(self):
+        docs = []
+        for node, data in self.semantic.nodes(data=True):
+            docs.append(Document(text=json.dumps(data, default=str), metadata={"node_id": node, "graph_type": "semantic"}))
+        for node, data in self.procedural.nodes(data=True):
+            docs.append(Document(text=json.dumps(data, default=str), metadata={"node_id": node, "graph_type": "procedural"}))
+
+        if docs:
+            self.property_graph = PropertyGraphIndex.from_documents(docs)
+        else:
+            self.property_graph = PropertyGraphIndex.from_documents([])
 
     # -- GraphRAG context builder --------------------------------------------
 
     def build_context(self, episodic_node_id: str) -> str:
         """Build a localized text context for *episodic_node_id*.
 
-        Merges the node's own attributes with reachable Semantic and
-        Procedural neighbours (1-hop) to form the context window sent to
-        the 32B model.
+        Configures a LlamaIndex retriever that queries the PropertyGraphIndex.
+        Uses the existing Qwen3-Reranker cross-encoder as a Node Postprocessor.
         """
         parts: list[str] = []
 
@@ -111,17 +160,28 @@ class TriGraphMemory:
             attrs = dict(self.episodic.nodes[episodic_node_id])
             parts.append(f"[Episodic] {episodic_node_id}: {json.dumps(attrs, default=str)}")
 
-        # Linked semantic nodes (via cross-graph edges stored as attrs)
-        for _, target, data in self.episodic.out_edges(episodic_node_id, data=True):
-            if data.get("graph") == "semantic" and target in self.semantic:
-                attrs = dict(self.semantic.nodes[target])
-                parts.append(f"[Semantic] {target}: {json.dumps(attrs, default=str)}")
+            # Use LlamaIndex property graph retriever to fetch related semantic/procedural
+            if self.property_graph:
+                query = str(attrs.get("description", ""))
 
-        # Linked procedural nodes
-        for _, target, data in self.episodic.out_edges(episodic_node_id, data=True):
-            if data.get("graph") == "procedural" and target in self.procedural:
-                attrs = dict(self.procedural.nodes[target])
-                parts.append(f"[Procedural] {target}: {json.dumps(attrs, default=str)}")
+                retriever = self.property_graph.as_retriever(similarity_top_k=5)
+                retrieved_nodes = retriever.retrieve(query)
+
+                # Filter using Qwen3-Reranker cross-encoder as a Node Postprocessor logic
+                from orchestrator.rerank_engine import rerank_candidates
+                candidates = []
+                for node in retrieved_nodes:
+                    node_id = node.metadata.get("node_id", "unknown")
+                    candidates.append({"id": node_id, "description": node.text})
+
+                edges = rerank_candidates(episodic_node_id, query, candidates)
+                valid_ids = {e.candidate_id for e in edges}
+
+                for node in retrieved_nodes:
+                    node_id = node.metadata.get("node_id", "unknown")
+                    graph_type = node.metadata.get("graph_type", "unknown")
+                    if node_id in valid_ids:
+                        parts.append(f"[{graph_type.capitalize()}] {node_id}: {node.text}")
 
         return "\n".join(parts) if parts else "(no context)"
 
@@ -132,3 +192,49 @@ class TriGraphMemory:
             "procedural": nx.node_link_data(self.procedural),
             "episodic": nx.node_link_data(self.episodic),
         }
+
+def generate_interactive_graph_html(memory: TriGraphMemory) -> str:
+    """Merge TriGraph memory graphs and render PyVis network HTML."""
+    from pyvis.network import Network
+    import tempfile
+
+    net = Network(height="600px", width="100%", directed=True, notebook=False)
+
+    # Merge Semantic (Blue)
+    for node, data in memory.semantic.nodes(data=True):
+        label = data.get("name") or data.get("description") or str(node)
+        # truncation
+        if len(label) > 20:
+            label = label[:17] + "..."
+        net.add_node(str(node), label=label, color="#3498db", title=json.dumps(data, indent=2))
+
+    for u, v, data in memory.semantic.edges(data=True):
+        net.add_edge(str(u), str(v), title=json.dumps(data))
+
+    # Merge Procedural (Green)
+    for node, data in memory.procedural.nodes(data=True):
+        label = data.get("rule") or data.get("description") or str(node)
+        if len(label) > 20:
+            label = label[:17] + "..."
+        net.add_node(str(node), label=label, color="#2ecc71", title=json.dumps(data, indent=2))
+
+    for u, v, data in memory.procedural.edges(data=True):
+        net.add_edge(str(u), str(v), title=json.dumps(data))
+
+    # Merge Episodic (Red)
+    for node, data in memory.episodic.nodes(data=True):
+        label = data.get("description") or str(node)
+        if len(label) > 20:
+            label = label[:17] + "..."
+        net.add_node(str(node), label=label, color="#e74c3c", title=json.dumps(data, indent=2))
+
+    for u, v, data in memory.episodic.edges(data=True):
+        net.add_edge(str(u), str(v), title=json.dumps(data))
+
+    net.toggle_physics(True)
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+        net.write_html(f.name)
+        with open(f.name, "r") as html_f:
+            html = html_f.read()
+    os.remove(f.name)
+    return html

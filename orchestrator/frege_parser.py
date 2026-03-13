@@ -52,9 +52,7 @@ class TaskDAG(BaseModel):
 # ---------------------------------------------------------------------------
 
 DECOMPOSITION_SYSTEM = """You are a task decomposition engine.
-Given a user prompt, break it into the SMALLEST possible atomic sub-tasks.
-Return ONLY a JSON array of objects with keys: "description", "depends_on" (list of indices, 0-based), "tool_hint".
-Do NOT include any explanation outside the JSON array."""
+Given a user prompt, break it into the SMALLEST possible atomic sub-tasks."""
 
 
 def _build_decomposition_messages(
@@ -91,33 +89,27 @@ def parse_prompt(
     from orchestrator.llm_client import chat_completion
 
     messages = _build_decomposition_messages(user_prompt)
-    content = chat_completion(
-        messages, model=model, temperature=0.2, max_tokens=2048,
+
+    # We pass the schema directly; the backend uses outlines to enforce structured generation
+    dag: TaskDAG = chat_completion(
+        messages, model=model, temperature=0.2, max_tokens=2048, schema=TaskDAG
     )
 
-    # The model may wrap JSON in markdown fences — strip them.
-    content = content.strip()
-    if content.startswith("```"):
-        content = content.split("\n", 1)[1]
-    if content.endswith("```"):
-        content = content.rsplit("```", 1)[0]
-    content = content.strip()
+    # The output is directly guaranteed to be a TaskDAG.
+    # Let's populate user_prompt if empty to be safe
+    dag.user_prompt = user_prompt
 
-    raw_tasks: list[dict[str, Any]] = json.loads(content)
+    # Map any index-based depends_on to UUIDs for safety
+    nodes = dag.tasks
+    for i, item in enumerate(nodes):
+        deps = item.depends_on
+        # Assuming if depends_on are indices represented as strings, we fix them:
+        new_deps = []
+        for d in deps:
+            if d.isdigit() and int(d) < len(nodes):
+                new_deps.append(nodes[int(d)].id)
+            else:
+                new_deps.append(d)
+        nodes[i].depends_on = new_deps
 
-    # Build AtomicTaskNode list, mapping index-based depends_on → UUIDs
-    nodes: list[AtomicTaskNode] = []
-    for item in raw_tasks:
-        nodes.append(
-            AtomicTaskNode(
-                description=item.get("description", ""),
-                tool_hint=item.get("tool_hint", ""),
-            )
-        )
-
-    # Resolve depends_on indices to actual node IDs
-    for i, item in enumerate(raw_tasks):
-        deps = item.get("depends_on", [])
-        nodes[i].depends_on = [nodes[int(d)].id for d in deps if int(d) < len(nodes)]
-
-    return TaskDAG(user_prompt=user_prompt, tasks=nodes)
+    return dag
