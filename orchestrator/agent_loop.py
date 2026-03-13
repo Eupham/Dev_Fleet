@@ -318,7 +318,11 @@ def agent_loop_stream(user_prompt: str):
 
     def run_graph():
         for s in app.stream(initial_state, config=config):
-            update_queue.put(("update", s))
+            node_name = list(s.keys())[0]
+            # Fetch the full cumulative state so the UI always has complete context,
+            # not just the diff produced by this node's update.
+            full_state = app.get_state(config).values
+            update_queue.put(("update", {node_name: full_state}))
         update_queue.put(("done", None))
 
     t = threading.Thread(target=run_graph)
