@@ -10,11 +10,11 @@ web_image = (
         "fastapi", "uvicorn", "jinja2", "python-multipart", "pydantic>=2.5", "networkx>=3.2", "chainlit>=1.1.0", "pyvis>=0.3.2",
         "llama-index-core>=0.10.0", "llama-index>=0.10.0", "llama-index-embeddings-huggingface>=0.1.0"
     )
-    .add_local_python_source("fleet_app")
-    .add_local_python_source("orchestrator")
-    .add_local_python_source("inference")
-    .add_local_python_source("ui")
-    .add_local_file("fix_chainlit.py", "/tmp/fix_chainlit.py")
+    .add_local_python_source("fleet_app", copy=True)
+    .add_local_python_source("orchestrator", copy=True)
+    .add_local_python_source("inference", copy=True)
+    .add_local_python_source("ui", copy=True)
+    .add_local_file("fix_chainlit.py", "/tmp/fix_chainlit.py", copy=True)
     .run_commands(["python3 /tmp/fix_chainlit.py"])
 )
 
