@@ -85,7 +85,7 @@ jobs:
           MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
         run: |
-          modal run app.py --prompt "Write a hello world function in Python"
+          python run_smoke_test.py "Write a hello world function in Python"
 
       - name: Run Modal-native unit tests
         env:
