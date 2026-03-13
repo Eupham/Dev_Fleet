@@ -78,25 +78,22 @@ try:
 
                 step.output = "\n".join(content_lines) if content_lines else json.dumps(state_snapshot, indent=2, default=str)
 
-            # Dynamically regenerate the HTML graph and update the main message elements
-            # Reconstruct Memory object from dictionary to use the generator
+            # Summarise the Tri-Graph state as text (cl.Html is not available in this
+            # Chainlit version; switching to a structured text element avoids the KeyError crash)
             mem = TriGraphMemory()
             mem.semantic = nx.node_link_graph(graphs_dict["semantic"])
             mem.procedural = nx.node_link_graph(graphs_dict["procedural"])
             mem.episodic = nx.node_link_graph(graphs_dict["episodic"])
 
-            graph_html = generate_interactive_graph_html(mem)
+            graph_summary = (
+                f"**Tri-Graph state** — "
+                f"episodic: {mem.episodic.number_of_nodes()} nodes / {mem.episodic.number_of_edges()} edges | "
+                f"semantic: {mem.semantic.number_of_nodes()} nodes | "
+                f"procedural: {mem.procedural.number_of_nodes()} nodes"
+            )
 
-            elements = [
-                cl.Html(
-                    name="Tri-Graph (Live)",
-                    content=graph_html,
-                    display="inline",
-                )
-            ]
-
-            graph_msg.content = f"*Executing Node: {step_name}...*"
-            graph_msg.elements = elements
+            graph_msg.content = f"*Executing Node: {step_name}...*\n\n{graph_summary}"
+            graph_msg.elements = []
             await graph_msg.update()
 
         # Finalize

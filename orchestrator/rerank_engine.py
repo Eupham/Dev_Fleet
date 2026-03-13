@@ -40,6 +40,22 @@ class ScoredEdge(BaseModel):
 
 EDGE_THRESHOLD = 0.75
 
+# Module-level handle — instantiated once per container lifetime, not per call.
+_reranker_handle = None
+
+
+def _get_reranker():
+    """Return a cached Reranker handle, creating it on first use."""
+    global _reranker_handle
+    if _reranker_handle is None:
+        try:
+            from inference.reranker import Reranker
+            _reranker_handle = Reranker()
+        except Exception:
+            import modal
+            _reranker_handle = modal.Cls.from_name("dev_fleet", "Reranker")()
+    return _reranker_handle
+
 
 def rerank_candidates(
     task_id: str,
@@ -64,20 +80,13 @@ def rerank_candidates(
     if not candidates:
         return []
 
-    from inference.reranker import Reranker
-
     cand_descs = [c.get("description", "") for c in candidates]
 
     try:
-        scores = Reranker().score_pairs.remote(task_description, cand_descs)
-    except Exception as e:
-        # Fallback for modal tests where dev_fleet app is not running locally but deployed
-        import modal
-        try:
-            scores = modal.Cls.from_name("dev_fleet", "Reranker")().score_pairs.remote(task_description, cand_descs)
-        except Exception:
-            logger.exception("Reranker call failed for task %s", task_id)
-            return []
+        scores = _get_reranker().score_pairs.remote(task_description, cand_descs)
+    except Exception:
+        logger.exception("Reranker call failed for task %s", task_id)
+        return []
 
     edges: list[ScoredEdge] = []
     for cand, score in zip(candidates, scores):
