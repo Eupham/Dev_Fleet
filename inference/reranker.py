@@ -39,7 +39,6 @@ reranker_image = (
         "huggingface-hub>=0.20",
     )
     .add_local_python_source("fleet_app", copy=True)
-    .add_local_python_source("fleet_app")
 )
 
 # Cache model weights across container restarts

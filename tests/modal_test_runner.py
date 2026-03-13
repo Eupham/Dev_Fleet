@@ -25,9 +25,9 @@ test_image = (
         "llama-index>=0.10.0",
         "llama-index-embeddings-huggingface>=0.1.0",
     )
-    .add_local_dir("orchestrator", remote_path="/root/orchestrator")
-    .add_local_dir("inference", remote_path="/root/inference")
-    .add_local_python_source("fleet_app")
+    .add_local_dir("orchestrator", remote_path="/root/orchestrator", copy=True)
+    .add_local_dir("inference", remote_path="/root/inference", copy=True)
+    .add_local_python_source("fleet_app", copy=True)
 )
 
 
