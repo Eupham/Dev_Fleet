@@ -95,11 +95,11 @@ try:
 
                 step.output = "\n".join(content_lines) if content_lines else orjson.dumps(state_snapshot, option=orjson.OPT_INDENT_2).decode("utf-8")
 
-            # Render the episodic Tri-Graph as a native Mermaid diagram inside Chainlit markdown
+            # Render the episodic Tri-Graph as a native Mermaid diagram inside Chainlit
             mem = TriGraphMemory()
             mem.episodic = nx.node_link_graph(graphs_dict["episodic"])
 
-            mermaid_lines = ["```mermaid", "graph TD"]
+            mermaid_lines = ["graph TD"]
             for node, data in mem.episodic.nodes(data=True):
                 label = str(data.get("description", node)).replace('"', "'")
                 if len(label) > 30:
@@ -114,16 +114,18 @@ try:
                     mermaid_lines.append(f"    style {node} fill:#f39c12,stroke:#d35400,stroke-width:2px,color:#fff")
             for u, v, _ in mem.episodic.edges(data=True):
                 mermaid_lines.append(f"    {u} --> {v}")
-            mermaid_lines.append("```")
 
             graph_markdown = "\n".join(mermaid_lines)
             final_graph_markdown = graph_markdown  # persist latest state for finalize
-            graph_msg.content = f"*Executing Node: {step_name}...*\n\n{graph_markdown}"
-            graph_msg.elements = []
+
+            # Use Chainlit's native Mermaid element instead of markdown code blocks
+            graph_msg.content = f"*Executing Node: {step_name}...*"
+            graph_msg.elements = [cl.Mermaid(content=graph_markdown)]
             await graph_msg.update()
 
-        # Finalize — preserve the last rendered graph instead of wiping it
-        graph_msg.content = f"**Execution Complete. Final Graph State:**\n\n{final_graph_markdown}"
+        # Finalize — preserve the last rendered graph as a Mermaid element
+        graph_msg.content = "**Execution Complete. Final Graph State:**"
+        graph_msg.elements = [cl.Mermaid(content=final_graph_markdown)]
         await graph_msg.update()
         await cl.Message(content="Task completed successfully.").send()
 
