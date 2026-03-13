@@ -31,6 +31,8 @@ from orchestrator.graph_memory import TriGraphMemory
 from orchestrator.llm_client import generate
 from orchestrator.rerank_engine import rerank_candidates
 from orchestrator.tool_sandbox import SandboxResult, ModalSandboxTool
+from orchestrator.supervisor import supervisor_node, conversation_node, direct_execute_node
+from orchestrator.codebase_rag import retrieve_codebase_node
 
 logger = logging.getLogger("dev_fleet.agent_loop")
 
@@ -46,6 +48,9 @@ class AgentState(TypedDict):
     user_prompt: str
     messages: Annotated[List[str], operator.add]
     dag: Optional[TaskDAG]
+    # Semantic supervisor routing fields
+    intent: Optional[str]
+    codebase_context: str
     # Memory is complex to pass natively via deepcopy in langgraph if it has unpickleable bits
     # We will instantiate or load inside nodes and persist at end, or keep minimal metadata.
     # To keep the state clean, we track which tasks are done:
@@ -64,7 +69,7 @@ def decompose_node(state: AgentState) -> dict:
     logger.info("Executing Decompose node...")
     memory = TriGraphMemory.load()
 
-    dag = parse_prompt(state["user_prompt"])
+    dag = parse_prompt(state["user_prompt"], codebase_context=state.get("codebase_context", ""))
 
     for task in dag.tasks:
         memory.add_episodic_node(task.id, task.model_dump())
@@ -277,15 +282,51 @@ def routing_after_failure(state: AgentState) -> str:
 # Construct the StateGraph
 # ---------------------------------------------------------------------------
 
+def _route_from_supervisor(state: AgentState) -> str:
+    """Route based on the intent field set by supervisor_node."""
+    intent = state.get("intent", "DECOMPOSE")
+    if intent == "CONVERSATION":
+        return "Conversation"
+    if intent == "DIRECT_EXECUTE":
+        return "Direct_Execute"
+    return "Retrieve_Codebase"
+
+
 def build_graph() -> StateGraph:
     workflow = StateGraph(AgentState)
 
+    # --- Semantic supervisor layer ---
+    workflow.add_node("Supervisor", supervisor_node)
+    workflow.add_node("Conversation", conversation_node)
+    workflow.add_node("Direct_Execute", direct_execute_node)
+    workflow.add_node("Retrieve_Codebase", retrieve_codebase_node)
+
+    # --- Existing execution pipeline ---
     workflow.add_node("Decompose", decompose_node)
     workflow.add_node("Rerank_and_Retrieve", rerank_and_retrieve_node)
     workflow.add_node("Execute", execute_node)
     workflow.add_node("Handle_Failure", handle_failure_node)
 
-    workflow.add_edge(START, "Decompose")
+    # Entry point
+    workflow.add_edge(START, "Supervisor")
+
+    # Supervisor → branch on intent
+    workflow.add_conditional_edges(
+        "Supervisor",
+        _route_from_supervisor,
+        {
+            "Conversation": "Conversation",
+            "Direct_Execute": "Direct_Execute",
+            "Retrieve_Codebase": "Retrieve_Codebase",
+        },
+    )
+
+    # Short-circuit exits
+    workflow.add_edge("Conversation", END)
+    workflow.add_edge("Direct_Execute", END)
+
+    # RAG → Decompose → existing pipeline
+    workflow.add_edge("Retrieve_Codebase", "Decompose")
     workflow.add_edge("Decompose", "Rerank_and_Retrieve")
     workflow.add_edge("Rerank_and_Retrieve", "Execute")
 
@@ -307,6 +348,8 @@ def agent_loop_stream(user_prompt: str):
         "user_prompt": user_prompt,
         "messages": [],
         "dag": None,
+        "intent": None,
+        "codebase_context": "",
         "current_task_idx": 0,
         "current_attempt": 1,
         "sandbox_results": [],

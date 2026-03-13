@@ -44,6 +44,10 @@ class TaskDAG(BaseModel):
     """The complete decomposition of a user prompt."""
 
     user_prompt: str
+    intent_observation: str = Field(
+        default="",
+        description="A brief, objective analysis of the user's core goal.",
+    )
     tasks: list[AtomicTaskNode]
 
     @model_validator(mode="after")
@@ -89,18 +93,23 @@ class TaskDAG(BaseModel):
 # Decomposition prompt template
 # ---------------------------------------------------------------------------
 
-DECOMPOSITION_SYSTEM = """You are a task decomposition engine.
-Given a user prompt, break it into AT MOST 5 atomic sub-tasks.
-Be concise — keep each task description under 60 words.
-Return the minimal number of tasks needed; simple prompts need only 1-2 tasks."""
+DECOMPOSITION_SYSTEM = """You are a task decomposition engine. First, generate an `intent_observation` interpreting the core goal of the request. Then, generate the necessary atomic sub-tasks to fulfill that goal."""
 
 
 def _build_decomposition_messages(
     user_prompt: str,
+    codebase_context: str = "",
 ) -> list[dict[str, str]]:
+    context_block = f"Here is the relevant codebase context:\n{codebase_context}\n\n" if codebase_context else ""
+    explicit_user_message = (
+        "The following text is the user prompt:\n"
+        f"{user_prompt}\n\n"
+        f"{context_block}"
+        "Decompose this into atomic sub-tasks in a quantity suitable to its complexity."
+    )
     return [
         {"role": "system", "content": DECOMPOSITION_SYSTEM},
-        {"role": "user", "content": user_prompt},
+        {"role": "user", "content": explicit_user_message},
     ]
 
 
@@ -112,6 +121,7 @@ def _build_decomposition_messages(
 def parse_prompt(
     user_prompt: str,
     model: str = "llm",
+    codebase_context: str = "",
 ) -> TaskDAG:
     """Decompose *user_prompt* into a ``TaskDAG`` via the 32B model.
 
@@ -128,7 +138,7 @@ def parse_prompt(
     """
     from orchestrator.llm_client import chat_completion
 
-    messages = _build_decomposition_messages(user_prompt)
+    messages = _build_decomposition_messages(user_prompt, codebase_context=codebase_context)
 
     # We pass the schema directly; the backend uses xgrammar to enforce structured generation.
     # max_tokens=512 is enough for 5 tasks; the 0.5B model can over-generate without this cap.
