@@ -37,6 +37,14 @@ reranker_image = (
         "torch>=2.0",
         "transformers>=4.51.0",
         "huggingface-hub>=0.20",
+        "hf_transfer",
+    )
+    .env(
+        {
+            # Enable fast parallel downloads for first-cold-start model fetch
+            "HF_HUB_ENABLE_HF_TRANSFER": "1",
+            "HF_XET_HIGH_PERFORMANCE": "1",
+        }
     )
     .add_local_python_source("fleet_app", copy=True)
 )

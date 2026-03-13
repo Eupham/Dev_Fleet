@@ -75,10 +75,9 @@ with vllm_image.imports():
     import outlines
 
 # ---------------------------------------------------------------------------
-# Volumes — persistent caches for weights and vLLM compilation artifacts
+# Volumes — persistent caches for vLLM compilation artifacts
 # ---------------------------------------------------------------------------
 
-hf_cache_vol = modal.Volume.from_name("hf-cache-vol", create_if_missing=True)
 vllm_cache_vol = modal.Volume.from_name("vllm-cache-vol", create_if_missing=True)
 
 # ---------------------------------------------------------------------------
