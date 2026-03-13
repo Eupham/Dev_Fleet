@@ -1,3 +1,3 @@
 import modal
 
-app = modal.App("devfleet")
+app = modal.App("dev_fleet")

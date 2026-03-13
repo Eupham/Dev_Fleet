@@ -34,3 +34,4 @@ htmlcov/
 # Temp files
 /tmp/
 *.log
+.chainlit/translations

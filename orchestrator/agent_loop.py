@@ -23,7 +23,7 @@ from orchestrator.llm_client import generate
 from orchestrator.rerank_engine import rerank_candidates
 from orchestrator.tool_sandbox import SandboxResult, ModalSandboxTool
 
-logger = logging.getLogger("devfleet.agent_loop")
+logger = logging.getLogger("dev_fleet.agent_loop")
 
 MAX_RETRIES = 2
 

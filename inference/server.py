@@ -17,7 +17,6 @@ import time
 from typing import Any, Optional
 
 import modal
-from pydantic import BaseModel
 
 from fleet_app import app  # shared app defined in app.py
 
@@ -42,11 +41,17 @@ vllm_image = (
     )
     .entrypoint([])
     .add_local_python_source("fleet_app", copy=True)
+    .add_local_python_source("orchestrator", copy=True)
     .uv_pip_install(
         "vllm==0.7.3",
         "huggingface-hub==0.36.0",
         "hf_transfer",
         "outlines>=0.0.38",
+    )
+    .run_commands(
+        [
+            f"huggingface-cli download {MODEL_NAME}",
+        ]
     )
     .env(
         {
@@ -141,11 +146,12 @@ class Inference:
             "0.0.0.0",
             "--port",
             str(VLLM_PORT),
-            "--uvicorn-log-level=info",
+            "--uvicorn-log-level=warning",
             "--tensor-parallel-size",
             str(N_GPU),
             "--gpu-memory-utilization",
             "0.90",
+            "--disable-log-requests",  # Silences the massive prompt strings in logs
             # Snapshot-specific flags
             "--enforce-eager",
             "--dtype=half",
@@ -157,17 +163,17 @@ class Inference:
             "8192",
         ]
 
-        print("[devfleet] Starting vLLM:", " ".join(cmd))
+        print("[dev_fleet] Starting vLLM:", " ".join(cmd))
         self.proc = subprocess.Popen(cmd)
         _wait_ready(self.proc)
         _warmup()
-        print("[devfleet] Snapshot ready — capturing full GPU memory including weights.")
+        print("[dev_fleet] Snapshot ready — capturing full GPU memory including weights.")
 
     @modal.enter(snap=False)
     def restore(self):
         """Resume server live after restoring from a GPU snapshot."""
         _wait_ready(self.proc)
-        print("[devfleet] Restored from snapshot — server live.")
+        print("[dev_fleet] Restored from snapshot — server live.")
 
     @modal.method()
     def generate(
@@ -176,7 +182,7 @@ class Inference:
         model: str = "llm",
         temperature: float = 0.3,
         max_tokens: int = 4096,
-        schema: Optional[type[BaseModel]] = None,
+        schema: Optional[Any] = None,
     ) -> Any:
         """Modal-native RPC — called by the orchestrator via ``.remote()``.
 

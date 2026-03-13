@@ -61,7 +61,7 @@ jobs:
         env:
           MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
-        run: timeout 30 modal app logs devfleet || true
+        run: timeout 30 modal app logs dev_fleet || true
 
   smoke-test:
     name: Smoke test on Modal

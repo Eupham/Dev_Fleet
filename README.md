@@ -5,7 +5,7 @@
 
 ## Architecture
 
-A single Modal app (`devfleet`) with three container types:
+A single Modal app (`dev_fleet`) with three container types:
 
 | Container | Description | Model | Resource |
 |-----------|-------------|-------|----------|
@@ -22,7 +22,7 @@ User Prompt
     │
     ▼
 ┌──────────────────────────────────────────────────────┐
-│  devfleet (single Modal app)                         │
+│  dev_fleet (single Modal app)                         │
 │                                                      │
 │  ┌─────────────────────┐                             │
 │  │ Orchestrator (CPU)  │                             │
@@ -95,7 +95,7 @@ modal deploy app.py
 ### View Logs
 
 ```bash
-modal app logs devfleet
+modal app logs dev_fleet
 ```
 
 ### Run Tests

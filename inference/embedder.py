@@ -26,13 +26,14 @@ embedder_image = (
         "sentence-transformers>=2.0.0",
         "huggingface-hub",
     )
+    .add_local_python_source("fleet_app")
 )
 
 
 @app.cls(
     image=embedder_image,
     cpu=1.0,
-    keep_warm=0,
+    min_containers=0,
     timeout=600,
     retries=0,
 )

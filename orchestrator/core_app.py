@@ -3,7 +3,7 @@
 Coordinates graph memory, Frege parsing, Qwen3-Reranker scoring,
 sandbox execution, and the main agent loop.  All inference calls
 use Modal-native RPC to the Inference and Reranker classes within
-the same ``devfleet`` app — no HTTP overhead or idle timeouts.
+the same ``dev_fleet`` app — no HTTP overhead or idle timeouts.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%SZ",
 )
-logger = logging.getLogger("devfleet.orchestrator")
+logger = logging.getLogger("dev_fleet.orchestrator")
 
 # ---------------------------------------------------------------------------
 # Container image — lightweight CPU image for orchestration logic
@@ -55,10 +55,10 @@ orchestrator_image = (
 # ---------------------------------------------------------------------------
 
 graph_state_vol = modal.Volume.from_name(
-    "devfleet-graph-state", create_if_missing=True
+    "dev_fleet-graph-state", create_if_missing=True
 )
 workspace_vol = modal.Volume.from_name(
-    "devfleet-workspace", create_if_missing=True
+    "dev_fleet-workspace", create_if_missing=True
 )
 
 
