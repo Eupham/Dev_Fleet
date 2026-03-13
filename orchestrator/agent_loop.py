@@ -368,10 +368,26 @@ def agent_loop_stream(user_prompt: str):
     def run_graph():
         for s in app.stream(initial_state, config=config):
             node_name = list(s.keys())[0]
-            # Fetch the full cumulative state so the UI always has complete context,
-            # not just the diff produced by this node's update.
+            # The stream event contains the node's update. We merge it into the accumulated
+            # state snapshot to ensure all fields are present before sending to the UI.
+            # This avoids timing issues where app.get_state() might return a stale checkpoint.
+            s_update = s[node_name]
+            # Fetch the accumulated state from the checkpoint
             full_state = app.get_state(config).values
-            update_queue.put(("update", {node_name: full_state}))
+            # Ensure all required TypedDict fields are present; fill gaps from initial_state
+            # to prevent KeyError or None values in UI
+            safe_state = {
+                "user_prompt": full_state.get("user_prompt", initial_state["user_prompt"]),
+                "messages": full_state.get("messages", []),
+                "dag": full_state.get("dag"),
+                "intent": full_state.get("intent"),
+                "codebase_context": full_state.get("codebase_context", ""),
+                "current_task_idx": full_state.get("current_task_idx", 0),
+                "current_attempt": full_state.get("current_attempt", 1),
+                "sandbox_results": full_state.get("sandbox_results", []),
+                "final_output": full_state.get("final_output"),
+            }
+            update_queue.put(("update", {node_name: safe_state}))
         update_queue.put(("done", None))
 
     t = threading.Thread(target=run_graph)
