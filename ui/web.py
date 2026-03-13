@@ -54,80 +54,89 @@ try:
         final_graph_markdown = ""
 
         # Iterate over the generator from Modal
-        async for update in run_agent_stream_func.remote_gen.aio(prompt):
-            step_name = update["step"]
-            state_snapshot = update["state_snapshot"]
-            graphs_dict = update["graphs"]
+        try:
+            async for update in run_agent_stream_func.remote_gen.aio(prompt):
+                step_name = update["step"]
+                state_snapshot = update["state_snapshot"]
+                graphs_dict = update["graphs"]
 
-            if step_name == "keep-alive":
-                # Just ignore keep-alive to keep connection open
-                continue
+                if step_name == "keep-alive":
+                    # Just ignore keep-alive to keep connection open
+                    continue
 
-            # Display the execution step
-            async with cl.Step(name=step_name) as step:
-                # Parse out a clean markdown display instead of raw JSON blocks
-                content_lines = []
+                # Display the execution step
+                async with cl.Step(name=step_name) as step:
+                    # Parse out a clean markdown display instead of raw JSON blocks
+                    content_lines = []
 
-                # Show the task DAG cleanly if it's the Decompose step
-                if step_name == "Decompose" and "dag" in state_snapshot and state_snapshot["dag"]:
-                    content_lines.append("**Tasks Decomposed:**")
-                    tasks = state_snapshot["dag"].get("tasks", []) if isinstance(state_snapshot["dag"], dict) else getattr(state_snapshot["dag"], "tasks", [])
-                    for t in tasks:
-                        desc = t.get("description", "") if isinstance(t, dict) else getattr(t, "description", "")
-                        content_lines.append(f"- {desc}")
+                    # Show the task DAG cleanly if it's the Decompose step
+                    if step_name == "Decompose" and "dag" in state_snapshot and state_snapshot["dag"]:
+                        content_lines.append("**Tasks Decomposed:**")
+                        tasks = state_snapshot["dag"].get("tasks", []) if isinstance(state_snapshot["dag"], dict) else getattr(state_snapshot["dag"], "tasks", [])
+                        for t in tasks:
+                            desc = t.get("description", "") if isinstance(t, dict) else getattr(t, "description", "")
+                            content_lines.append(f"- {desc}")
 
-                # Show the latest messages
-                if "messages" in state_snapshot and state_snapshot["messages"]:
-                    content_lines.append(f"**Agent:** {state_snapshot['messages'][-1]}")
+                    # Show the latest messages
+                    if "messages" in state_snapshot and state_snapshot["messages"]:
+                        content_lines.append(f"**Agent:** {state_snapshot['messages'][-1]}")
 
-                # Show sandbox results if any
-                if "sandbox_results" in state_snapshot and state_snapshot["sandbox_results"]:
-                    latest_sandbox = state_snapshot["sandbox_results"][-1]
-                    # Handle both dict (JSON-serialised) and dataclass object (in-process)
-                    if isinstance(latest_sandbox, dict):
-                        stdout = latest_sandbox.get("stdout", "")
-                        exit_code = latest_sandbox.get("exit_code", 0)
-                    else:
-                        stdout = getattr(latest_sandbox, "stdout", "")
-                        exit_code = getattr(latest_sandbox, "exit_code", 0)
-                    status_icon = "✅ Success" if exit_code == 0 else "❌ Failed"
-                    content_lines.append(f"\n**Tool Execution ({status_icon}):**\n```\n{stdout[:1000]}\n```")
+                    # Show sandbox results if any
+                    if "sandbox_results" in state_snapshot and state_snapshot["sandbox_results"]:
+                        latest_sandbox = state_snapshot["sandbox_results"][-1]
+                        # Handle both dict (JSON-serialised) and dataclass object (in-process)
+                        if isinstance(latest_sandbox, dict):
+                            stdout = latest_sandbox.get("stdout", "")
+                            exit_code = latest_sandbox.get("exit_code", 0)
+                        else:
+                            stdout = getattr(latest_sandbox, "stdout", "")
+                            exit_code = getattr(latest_sandbox, "exit_code", 0)
+                        status_icon = "✅ Success" if exit_code == 0 else "❌ Failed"
+                        content_lines.append(f"\n**Tool Execution ({status_icon}):**\n```\n{stdout[:1000]}\n```")
 
-                step.output = "\n".join(content_lines) if content_lines else orjson.dumps(state_snapshot, option=orjson.OPT_INDENT_2).decode("utf-8")
+                    step.output = "\n".join(content_lines) if content_lines else orjson.dumps(state_snapshot, option=orjson.OPT_INDENT_2).decode("utf-8")
 
-            # Render the episodic Tri-Graph as a native Mermaid diagram inside Chainlit
-            mem = TriGraphMemory()
-            mem.episodic = nx.node_link_graph(graphs_dict["episodic"])
+                # Render the episodic Tri-Graph as a native Mermaid diagram inside Chainlit
+                mem = TriGraphMemory()
+                mem.episodic = nx.node_link_graph(graphs_dict["episodic"])
 
-            mermaid_lines = ["graph TD"]
-            for node, data in mem.episodic.nodes(data=True):
-                label = str(data.get("description", node)).replace('"', "'")
-                if len(label) > 30:
-                    label = label[:27] + "..."
-                status = data.get("status", "pending")
-                mermaid_lines.append(f'    {node}["{label}"]')
-                if status == "success":
-                    mermaid_lines.append(f"    style {node} fill:#2ecc71,stroke:#27ae60,stroke-width:2px,color:#fff")
-                elif status == "failed":
-                    mermaid_lines.append(f"    style {node} fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff")
-                elif status == "running":
-                    mermaid_lines.append(f"    style {node} fill:#f39c12,stroke:#d35400,stroke-width:2px,color:#fff")
-            for u, v, _ in mem.episodic.edges(data=True):
-                mermaid_lines.append(f"    {u} --> {v}")
+                mermaid_lines = ["graph TD"]
+                for node, data in mem.episodic.nodes(data=True):
+                    label = str(data.get("description", node)).replace('"', "'")
+                    if len(label) > 30:
+                        label = label[:27] + "..."
+                    status = data.get("status", "pending")
+                    mermaid_lines.append(f'    {node}["{label}"]')
+                    if status == "success":
+                        mermaid_lines.append(f"    style {node} fill:#2ecc71,stroke:#27ae60,stroke-width:2px,color:#fff")
+                    elif status == "failed":
+                        mermaid_lines.append(f"    style {node} fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff")
+                    elif status == "running":
+                        mermaid_lines.append(f"    style {node} fill:#f39c12,stroke:#d35400,stroke-width:2px,color:#fff")
+                for u, v, _ in mem.episodic.edges(data=True):
+                    mermaid_lines.append(f"    {u} --> {v}")
 
-            graph_markdown = "\n".join(mermaid_lines)
-            final_graph_markdown = graph_markdown  # persist latest state for finalize
+                graph_markdown = "\n".join(mermaid_lines)
+                final_graph_markdown = graph_markdown  # persist latest state for finalize
 
-            # Use Chainlit's native Mermaid element instead of markdown code blocks
-            graph_msg.content = f"*Executing Node: {step_name}...*"
-            graph_msg.elements = [cl.Mermaid(content=graph_markdown)]
+                # Use Chainlit's native Mermaid element instead of markdown code blocks
+                graph_msg.content = f"*Executing Node: {step_name}...*"
+                graph_msg.elements = [cl.Mermaid(content=graph_markdown)]
+                await graph_msg.update()
+
+            # Finalize — preserve the last rendered graph as a Mermaid element
+            graph_msg.content = "**Execution Complete. Final Graph State:**"
+            graph_msg.elements = [cl.Mermaid(content=final_graph_markdown)]
             await graph_msg.update()
+            await cl.Message(content="Task completed successfully.").send()
 
-        # Finalize — preserve the last rendered graph as a Mermaid element
-        graph_msg.content = "**Execution Complete. Final Graph State:**"
-        graph_msg.elements = [cl.Mermaid(content=final_graph_markdown)]
-        await graph_msg.update()
-        await cl.Message(content="Task completed successfully.").send()
+        except Exception as e:
+            # Client disconnected or stream interrupted — update the graph message with
+            # whatever was rendered so far rather than leaving the UI in a loading state.
+            graph_msg.content = f"**Stream ended: {type(e).__name__}**"
+            if final_graph_markdown:
+                graph_msg.elements = [cl.Mermaid(content=final_graph_markdown)]
+            await graph_msg.update()
 
 except ImportError:
     # This prevents CI pipelines and local modal deploys from failing when chainlit is not installed globally.

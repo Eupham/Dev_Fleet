@@ -110,10 +110,12 @@ def run_agent_stream(user_prompt: str) -> Iterator[Dict[str, Any]]:
 
     log_event("agent_start", {"prompt": user_prompt[:200]})
 
-    for update in agent_loop_stream(user_prompt):
-        yield update
-
-    log_event("agent_complete", {})
+    try:
+        for update in agent_loop_stream(user_prompt):
+            yield update
+        log_event("agent_complete", {})
+    except GeneratorExit:
+        log_event("agent_cancelled", {})
 
 
 @app.function(
