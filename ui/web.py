@@ -54,6 +54,10 @@ try:
             state_snapshot = update["state_snapshot"]
             graphs_dict = update["graphs"]
 
+            if step_name == "keep-alive":
+                # Just ignore keep-alive to keep connection open
+                continue
+
             # Display the execution step
             async with cl.Step(name=step_name) as step:
                 # Parse out a clean markdown display instead of raw JSON blocks
