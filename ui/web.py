@@ -79,10 +79,14 @@ async def main(message: cl.Message):
     await cl.Message(content="Task completed successfully.").send()
 
 
-@app.function(image=web_image)
-@modal.asgi_app()
+@app.function(
+    image=web_image,
+    min_containers=1,
+)
+@modal.concurrent(max_inputs=100)
+@modal.web_server(port=8000)
 def ui():
-    from chainlit.utils import mount_chainlit
-    web_app = FastAPI()
-    mount_chainlit(app=web_app, target="ui/web.py", path="/")
-    return web_app
+    import subprocess
+    # Run the chainlit server via subprocess.
+    # Modal web_server expects a process to bind to the specified port.
+    subprocess.Popen(["chainlit", "run", "ui/web.py", "--host", "0.0.0.0", "--port", "8000", "--headless"])
