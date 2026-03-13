@@ -10,7 +10,7 @@ web_image = (
         "fastapi", "uvicorn", "jinja2", "python-multipart", "pydantic>=2.5", "networkx>=3.2",
         "chainlit>=1.1.0",
         "llama-index-core>=0.10.0", "llama-index-embeddings-huggingface>=0.1.0",
-        "smolagents>=1.0.0",
+        "smolagents>=1.0.0", "orjson>=3.9.0",
     )
     .add_local_python_source("fleet_app", copy=True)
     .add_local_python_source("orchestrator", copy=True)
@@ -22,7 +22,7 @@ web_image = (
 
 try:
     import chainlit as cl
-    import json
+    import orjson
 
     @cl.on_chat_start
     async def on_chat_start():
@@ -93,7 +93,7 @@ try:
                     status_icon = "✅ Success" if exit_code == 0 else "❌ Failed"
                     content_lines.append(f"\n**Tool Execution ({status_icon}):**\n```\n{stdout[:1000]}\n```")
 
-                step.output = "\n".join(content_lines) if content_lines else json.dumps(state_snapshot, indent=2, default=str)
+                step.output = "\n".join(content_lines) if content_lines else orjson.dumps(state_snapshot, option=orjson.OPT_INDENT_2).decode("utf-8")
 
             # Render the episodic Tri-Graph as a native Mermaid diagram inside Chainlit markdown
             mem = TriGraphMemory()
