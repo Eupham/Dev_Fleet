@@ -27,12 +27,9 @@ embedder_image = (
         "huggingface-hub",
         "hf_transfer",
     )
-    .env(
-        {
-            # Enable fast parallel downloads for first-cold-start model fetch
-            "HF_HUB_ENABLE_HF_TRANSFER": "1",
-            "HF_XET_HIGH_PERFORMANCE": "1",
-        }
+    .run_commands(
+        [f"huggingface-cli download {MODEL_NAME}"],
+        env={"HF_HUB_ENABLE_HF_TRANSFER": "1", "HF_XET_HIGH_PERFORMANCE": "1"},
     )
     .add_local_python_source("fleet_app", copy=True)
 )
