@@ -1,8 +1,9 @@
 import modal
 from fleet_app import app
 
-# Create a lightweight CPU image for the web UI. We explicitly add the fleet_app, orchestrator, and inference modules
-# to ensure we can import and invoke the orchestrator function.
+# Create a lightweight CPU image for the web UI. We explicitly add the fleet_app, orchestrator, inference, and ui
+# modules to ensure we can import and invoke the orchestrator function AND that `chainlit run ui/web.py`
+# can locate the file inside the container.
 web_image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install(
@@ -12,6 +13,7 @@ web_image = (
     .add_local_python_source("fleet_app")
     .add_local_python_source("orchestrator")
     .add_local_python_source("inference")
+    .add_local_python_source("ui")
 )
 
 try:
