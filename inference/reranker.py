@@ -57,6 +57,7 @@ reranker_cache_vol = modal.Volume.from_name(
     volumes={"/root/.cache/huggingface": reranker_cache_vol},
     scaledown_window=5 * MINUTES,
     timeout=5 * MINUTES,
+    enable_memory_snapshot=True,
 )
 @modal.concurrent(max_inputs=50)
 class Reranker:
