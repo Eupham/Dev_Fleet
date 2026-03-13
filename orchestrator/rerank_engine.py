@@ -18,7 +18,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-logger = logging.getLogger("devfleet.rerank")
+logger = logging.getLogger("dev_fleet.rerank")
 
 # ---------------------------------------------------------------------------
 # Pydantic schema for scored edges
@@ -71,10 +71,10 @@ def rerank_candidates(
     try:
         scores = Reranker().score_pairs.remote(task_description, cand_descs)
     except Exception as e:
-        # Fallback for modal tests where devfleet app is not running locally but deployed
+        # Fallback for modal tests where dev_fleet app is not running locally but deployed
         import modal
         try:
-            scores = modal.Cls.from_name("devfleet", "Reranker")().score_pairs.remote(task_description, cand_descs)
+            scores = modal.Cls.from_name("dev_fleet", "Reranker")().score_pairs.remote(task_description, cand_descs)
         except Exception:
             logger.exception("Reranker call failed for task %s", task_id)
             return []

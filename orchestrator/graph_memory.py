@@ -36,7 +36,7 @@ class ModalEmbeddings(BaseEmbedding):
         try:
             return Embedder().encode.remote([query])[0]
         except Exception:
-            return modal.Cls.from_name("devfleet", "Embedder")().encode.remote([query])[0]
+            return modal.Cls.from_name("dev_fleet", "Embedder")().encode.remote([query])[0]
 
     def _get_text_embedding(self, text: str) -> List[float]:
         from inference.embedder import Embedder
@@ -44,7 +44,7 @@ class ModalEmbeddings(BaseEmbedding):
         try:
             return Embedder().encode.remote([text])[0]
         except Exception:
-            return modal.Cls.from_name("devfleet", "Embedder")().encode.remote([text])[0]
+            return modal.Cls.from_name("dev_fleet", "Embedder")().encode.remote([text])[0]
 
     def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
         from inference.embedder import Embedder
@@ -52,7 +52,7 @@ class ModalEmbeddings(BaseEmbedding):
         try:
             return Embedder().encode.remote(texts)
         except Exception:
-            return modal.Cls.from_name("devfleet", "Embedder")().encode.remote(texts)
+            return modal.Cls.from_name("dev_fleet", "Embedder")().encode.remote(texts)
 
     async def _aget_query_embedding(self, query: str) -> List[float]:
         from inference.embedder import Embedder
@@ -60,7 +60,7 @@ class ModalEmbeddings(BaseEmbedding):
         try:
             result = await Embedder().encode.remote.aio([query])
         except Exception:
-            result = await modal.Cls.from_name("devfleet", "Embedder")().encode.remote.aio([query])
+            result = await modal.Cls.from_name("dev_fleet", "Embedder")().encode.remote.aio([query])
         return result[0]
 
     async def _aget_text_embedding(self, text: str) -> List[float]:
@@ -69,7 +69,7 @@ class ModalEmbeddings(BaseEmbedding):
         try:
             result = await Embedder().encode.remote.aio([text])
         except Exception:
-            result = await modal.Cls.from_name("devfleet", "Embedder")().encode.remote.aio([text])
+            result = await modal.Cls.from_name("dev_fleet", "Embedder")().encode.remote.aio([text])
         return result[0]
 
     async def _aget_text_embeddings(self, texts: List[str]) -> List[List[float]]:
@@ -78,7 +78,7 @@ class ModalEmbeddings(BaseEmbedding):
         try:
             return await Embedder().encode.remote.aio(texts)
         except Exception:
-            return await modal.Cls.from_name("devfleet", "Embedder")().encode.remote.aio(texts)
+            return await modal.Cls.from_name("dev_fleet", "Embedder")().encode.remote.aio(texts)
 
 Settings.embed_model = ModalEmbeddings()
 
@@ -241,6 +241,17 @@ class TriGraphMemory:
                     graph_type = node.metadata.get("graph_type", "unknown")
                     if node_id in valid_ids:
                         parts.append(f"[{graph_type.capitalize()}] {node_id}: {node.text}")
+
+            # Fallback for old manual networkx edges in case of test fixtures or incomplete retrieval
+            for _, target, edge_data in self.episodic.out_edges(episodic_node_id, data=True):
+                target_graph = edge_data.get("graph")
+
+                if target_graph == "semantic" and target in self.semantic:
+                    target_attrs = dict(self.semantic.nodes[target])
+                    parts.append(f"[Semantic] {target}: {json.dumps(target_attrs, default=str)}")
+                elif target_graph == "procedural" and target in self.procedural:
+                    target_attrs = dict(self.procedural.nodes[target])
+                    parts.append(f"[Procedural] {target}: {json.dumps(target_attrs, default=str)}")
 
         return "\n".join(parts) if parts else "(no context)"
 

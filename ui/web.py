@@ -33,24 +33,46 @@ try:
         # We will use a main message to attach the dynamically updating graph
         graph_msg = await cl.Message(content="*Initializing Agent...*").send()
 
+        # Need to use modal.Function.from_name inside the chainlit subprocess
+        # since it runs separately from the main app's python context
+        run_agent_stream_func = modal.Function.from_name("dev_fleet", "run_agent_stream")
+
+        # Load elements conditionally
+        loading_elements = [
+            cl.Text(name="Status", content="Attempting to start Dev Fleet orchestration engine. Please wait. First boot might take up to 2 minutes.", display="inline")
+        ]
+        graph_msg.elements = loading_elements
+        await graph_msg.update()
+
         # Iterate over the generator from Modal
-        async for update in run_agent_stream.remote_gen.aio(prompt):
+        async for update in run_agent_stream_func.remote_gen.aio(prompt):
             step_name = update["step"]
             state_snapshot = update["state_snapshot"]
             graphs_dict = update["graphs"]
 
             # Display the execution step
             async with cl.Step(name=step_name) as step:
-                # We can dump the node's specific modifications to state as output
-                # To keep it readable we just dump the new messages or status
-                # For deeper inspection, users can expand the step
-                out_content = {}
-                if "messages" in state_snapshot and state_snapshot["messages"]:
-                    out_content["latest_message"] = state_snapshot["messages"][-1]
-                if "sandbox_results" in state_snapshot and state_snapshot["sandbox_results"]:
-                    out_content["latest_sandbox"] = state_snapshot["sandbox_results"][-1]
+                # Parse out a clean markdown display instead of raw JSON blocks
+                content_lines = []
 
-                step.output = json.dumps(out_content, indent=2, default=str) if out_content else json.dumps(state_snapshot, indent=2, default=str)
+                # Show the task DAG cleanly if it's the Decompose step
+                if step_name == "Decompose" and "task_dag" in state_snapshot and state_snapshot["task_dag"]:
+                    content_lines.append("**Tasks Decomposed:**")
+                    tasks = state_snapshot["task_dag"].get("tasks", []) if isinstance(state_snapshot["task_dag"], dict) else getattr(state_snapshot["task_dag"], "tasks", [])
+                    for t in tasks:
+                        desc = t.get("description", "") if isinstance(t, dict) else getattr(t, "description", "")
+                        content_lines.append(f"- {desc}")
+
+                # Show the latest messages
+                if "messages" in state_snapshot and state_snapshot["messages"]:
+                    content_lines.append(f"**Agent:** {state_snapshot['messages'][-1]}")
+
+                # Show sandbox results if any
+                if "sandbox_results" in state_snapshot and state_snapshot["sandbox_results"]:
+                    latest_sandbox = state_snapshot["sandbox_results"][-1]
+                    content_lines.append(f"\n**Tool Execution Result:**\n```\n{latest_sandbox}\n```")
+
+                step.output = "\n".join(content_lines) if content_lines else json.dumps(state_snapshot, indent=2, default=str)
 
             # Dynamically regenerate the HTML graph and update the main message elements
             # Reconstruct Memory object from dictionary to use the generator

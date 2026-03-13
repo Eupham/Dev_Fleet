@@ -8,8 +8,8 @@
 ### Consolidate two Modal apps into one
 
 **Goal:** Eliminate HTTP-based inter-service calls, idle-timeout waste,
-and dual-credential complexity by merging `devfleet-inference` and
-`devfleet-orchestrator` into a single `devfleet` app.
+and dual-credential complexity by merging `dev_fleet-inference` and
+`dev_fleet-orchestrator` into a single `dev_fleet` app.
 
 **Changes:**
 - Created `app.py` as the single deployment entry point.

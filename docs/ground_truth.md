@@ -5,7 +5,7 @@
 
 ## Architecture Overview
 
-A single Modal app (`devfleet`) with three container types communicating
+A single Modal app (`dev_fleet`) with three container types communicating
 via Modal-native RPC (`.remote()`):
 
 | Container | Role | Model | Resource | File |
@@ -81,7 +81,7 @@ variables by the GitHub Actions workflow.
 modal deploy app.py
 
 # Retrieve logs
-modal app logs devfleet
+modal app logs dev_fleet
 
 # Quick test
 modal run app.py --prompt "Write a hello world function"
@@ -102,7 +102,7 @@ modal run app.py --prompt "Write a hello world function"
 Dev Fleet operates on Modal (version 1.0 and beyond, currently targeting >= 1.3.5).
 
 ### Architecture & Circular Imports
-- **Always separate `modal.App` initialization from the entrypoint.** Define `app = modal.App("devfleet")` in a lightweight file (e.g., `fleet_app.py`) and import it everywhere else. This prevents `ModuleNotFoundError` circular import bugs during GPU snapshotting.
+- **Always separate `modal.App` initialization from the entrypoint.** Define `app = modal.App("dev_fleet")` in a lightweight file (e.g., `fleet_app.py`) and import it everywhere else. This prevents `ModuleNotFoundError` circular import bugs during GPU snapshotting.
 - **Never perform top-level orchestration imports inside UI endpoints.** If you need to trigger a Modal function from another, use `.remote()` or `.remote.aio()`, and make sure the `Image` running the calling function explicitly includes the source code via `.add_local_python_source("module_name", copy=True)`.
 
 ### Deprecations in 1.0

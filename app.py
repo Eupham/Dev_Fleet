@@ -8,7 +8,7 @@ Deployment:
     modal deploy app.py
 
 Logs:
-    modal app logs devfleet
+    modal app logs dev_fleet
 """
 
 import json
@@ -22,6 +22,7 @@ from fleet_app import app
 # functions/classes with the shared ``app`` object.
 import inference.server  # noqa: E402 — registers Inference class
 import inference.reranker  # noqa: E402 — registers Reranker class
+import inference.embedder  # noqa: E402 — registers Embedder class
 import orchestrator.core_app  # noqa: E402 — registers run_agent
 import ui.web  # noqa: E402 — registers UI web endpoint
 

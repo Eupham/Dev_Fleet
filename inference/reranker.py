@@ -39,6 +39,7 @@ reranker_image = (
         "transformers>=4.51.0",
         "huggingface-hub>=0.20",
     )
+    .add_local_python_source("fleet_app")
 )
 
 # Cache model weights across container restarts

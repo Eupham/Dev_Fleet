@@ -84,10 +84,10 @@ class ModalSandboxTool(Tool):
         )
 
         workspace_vol = modal.Volume.from_name(
-            "devfleet-workspace", create_if_missing=True
+            "dev_fleet-workspace", create_if_missing=True
         )
 
-        app_ref = modal.App.lookup("devfleet", create_if_missing=True)
+        app_ref = modal.App.lookup("dev_fleet", create_if_missing=True)
 
         sandbox = modal.Sandbox.create(
             app=app_ref,

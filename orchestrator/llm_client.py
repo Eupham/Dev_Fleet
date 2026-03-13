@@ -24,11 +24,34 @@ def chat_completion(
 
     Returns the generated text from the model, or a Pydantic object if schema is provided.
     """
-    from inference.server import Inference
+    import modal
+    import asyncio
 
-    return Inference().generate.remote(
-        messages, model=model, temperature=temperature, max_tokens=max_tokens, schema=schema
-    )
+    # We dynamically load the remote class to ensure it's hydrated when called
+    # from isolated container contexts (like the test runner or chainlit).
+    inference_cls = modal.Cls.from_name("dev_fleet", "Inference")
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # Already inside a running event loop (e.g. LlamaIndex async pipeline).
+        # We cannot use loop.run_until_complete() or asyncio.run() here.
+        # We must use the blocking remote call because this function is fundamentally synchronous
+        # in the context of `def complete(self, ...)` in CustomLLM.
+        # This may emit an AsyncUsageWarning from Modal, but it will execute.
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return inference_cls().generate.remote(
+                messages, model=model, temperature=temperature, max_tokens=max_tokens, schema=schema
+            )
+    else:
+        # No running event loop. Safe to use blocking .remote()
+        return inference_cls().generate.remote(
+            messages, model=model, temperature=temperature, max_tokens=max_tokens, schema=schema
+        )
 
 
 def generate(
