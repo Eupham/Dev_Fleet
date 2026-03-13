@@ -73,7 +73,10 @@ def supervisor_node(state: "AgentState") -> dict:
         intent = "DECOMPOSE"
 
     logger.info("Supervisor classified intent as %s", intent)
-    return {"intent": intent}
+    return {
+        "intent": intent,
+        "messages": [f"[SUPERVISOR] Intent: {intent}"],
+    }
 
 
 def conversation_node(state: "AgentState") -> dict:
