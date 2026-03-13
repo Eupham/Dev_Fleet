@@ -21,7 +21,7 @@ from orchestrator.frege_parser import AtomicTaskNode, TaskDAG, parse_prompt
 from orchestrator.graph_memory import TriGraphMemory
 from orchestrator.llm_client import generate
 from orchestrator.rerank_engine import rerank_candidates
-from orchestrator.tool_sandbox import SandboxResult, execute_in_sandbox
+from orchestrator.tool_sandbox import SandboxResult, ModalSandboxTool
 
 logger = logging.getLogger("devfleet.agent_loop")
 
@@ -70,25 +70,33 @@ def decompose_node(state: AgentState) -> dict:
 
 
 def rerank_and_retrieve_node(state: AgentState) -> dict:
-    """Score task↔semantic edges via Qwen3-Reranker and link above threshold."""
+    """Score task edges against semantic, procedural, and episodic graphs via Qwen3-Reranker and link above threshold."""
     logger.info("Executing Rerank_and_Retrieve node...")
     memory = TriGraphMemory.load()
     dag = state["dag"]
 
     update = {}
     if dag:
-        candidates = [
-            {"id": n, "description": json.dumps(memory.semantic.nodes[n], default=str)}
-            for n in memory.semantic.nodes
-        ]
+        candidates = []
+        for n in memory.semantic.nodes:
+            candidates.append({"id": n, "graph": "semantic", "description": json.dumps(memory.semantic.nodes[n], default=str)})
+        for n in memory.procedural.nodes:
+            candidates.append({"id": n, "graph": "procedural", "description": json.dumps(memory.procedural.nodes[n], default=str)})
+        for n in memory.episodic.nodes:
+            # Avoid self-referencing if nodes share IDs somehow (they usually won't)
+            candidates.append({"id": n, "graph": "episodic", "description": json.dumps(memory.episodic.nodes[n], default=str)})
+
         if candidates:
             for task in dag.tasks:
-                for edge in rerank_candidates(task.id, task.description, candidates):
+                edges = rerank_candidates(task.id, task.description, candidates)
+                for edge in edges:
+                    # Find which graph this candidate came from to tag the edge properly
+                    graph_type = next((c["graph"] for c in candidates if c["id"] == edge.candidate_id), "unknown")
                     memory.add_episodic_edge(
                         task.id, edge.candidate_id,
-                        {"graph": "semantic", "score": edge.score},
+                        {"graph": graph_type, "score": edge.score},
                     )
-        update["messages"] = ["Reranked and linked episodic tasks to semantic knowledge."]
+        update["messages"] = ["Reranked and linked episodic tasks to semantic, procedural, and episodic knowledge."]
 
     memory.save()
     return update
@@ -144,7 +152,9 @@ def execute_node(state: AgentState) -> dict:
         update["current_task_idx"] = idx + 1
         update["current_attempt"] = 1
     else:
-        result = execute_in_sandbox(code_to_run, language=task.tool_hint)
+        tool = ModalSandboxTool()
+        raw_result = tool.forward(code=code_to_run, language=task.tool_hint)
+        result = SandboxResult(stdout=raw_result["stdout"], stderr=raw_result["stderr"], exit_code=raw_result["exit_code"])
         update["sandbox_results"] = [result]
         if result.success:
             memory.episodic.nodes[task.id].update(status="success", output=result.stdout[:2000])

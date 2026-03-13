@@ -70,9 +70,14 @@ def rerank_candidates(
 
     try:
         scores = Reranker().score_pairs.remote(task_description, cand_descs)
-    except Exception:
-        logger.exception("Reranker call failed for task %s", task_id)
-        return []
+    except Exception as e:
+        # Fallback for modal tests where devfleet app is not running locally but deployed
+        import modal
+        try:
+            scores = modal.Cls.from_name("devfleet", "Reranker")().score_pairs.remote(task_description, cand_descs)
+        except Exception:
+            logger.exception("Reranker call failed for task %s", task_id)
+            return []
 
     edges: list[ScoredEdge] = []
     for cand, score in zip(candidates, scores):
