@@ -21,6 +21,11 @@ web_image = (
 try:
     import chainlit as cl
     import json
+    import chainlit.data as cl_data
+    from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
+
+    # Point the database to your persistent Modal Volume
+    cl_data._data_layer = SQLAlchemyDataLayer(url="sqlite:////state/chainlit_sessions.db")
 
     @cl.on_chat_start
     async def on_chat_start():
@@ -60,9 +65,9 @@ try:
                 content_lines = []
 
                 # Show the task DAG cleanly if it's the Decompose step
-                if step_name == "Decompose" and "task_dag" in state_snapshot and state_snapshot["task_dag"]:
+                if step_name == "Decompose" and "dag" in state_snapshot and state_snapshot["dag"]:
                     content_lines.append("**Tasks Decomposed:**")
-                    tasks = state_snapshot["task_dag"].get("tasks", []) if isinstance(state_snapshot["task_dag"], dict) else getattr(state_snapshot["task_dag"], "tasks", [])
+                    tasks = state_snapshot["dag"].get("tasks", []) if isinstance(state_snapshot["dag"], dict) else getattr(state_snapshot["dag"], "tasks", [])
                     for t in tasks:
                         desc = t.get("description", "") if isinstance(t, dict) else getattr(t, "description", "")
                         content_lines.append(f"- {desc}")
@@ -116,6 +121,5 @@ except ImportError:
 @modal.web_server(port=8000)
 def ui():
     import subprocess
-    # Run the chainlit server via subprocess.
-    # Modal web_server expects a process to bind to the specified port to natively support WebSockets.
-    subprocess.Popen(["chainlit", "run", "ui/web.py", "--host", "0.0.0.0", "--port", "8000", "--headless"])
+    # Use .run() instead of .Popen() to block and keep the container alive
+    subprocess.run(["chainlit", "run", "ui/web.py", "--host", "0.0.0.0", "--port", "8000", "--headless"])

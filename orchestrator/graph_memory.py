@@ -184,25 +184,36 @@ class TriGraphMemory:
     # -- Property Graph ingestion --------------------------------------------
 
     def _ingest_node_to_pg(self, node_id: str, attrs: dict[str, Any], graph_type: str):
-        """Ingest dictionary data into LlamaIndex PropertyGraphIndex."""
-        text_content = json.dumps(attrs, default=str)
-        doc = Document(text=text_content, metadata={"node_id": node_id, "graph_type": graph_type})
+        """Ingest deterministic nodes directly, bypassing LLM extraction."""
+        entity = EntityNode(
+            name=node_id,
+            label=graph_type,
+            properties=attrs
+        )
         if self.property_graph is None:
-            self.property_graph = PropertyGraphIndex.from_documents([doc])
+            # kg_extractors=[] disables the default LLM extraction pipeline
+            self.property_graph = PropertyGraphIndex(
+                nodes=[entity],
+                kg_extractors=[],
+                embed_model=Settings.embed_model
+            )
         else:
-            self.property_graph.insert(doc)
+            self.property_graph.insert_nodes([entity])
 
     def _rebuild_property_graph(self):
-        docs = []
-        for node, data in self.semantic.nodes(data=True):
-            docs.append(Document(text=json.dumps(data, default=str), metadata={"node_id": node, "graph_type": "semantic"}))
-        for node, data in self.procedural.nodes(data=True):
-            docs.append(Document(text=json.dumps(data, default=str), metadata={"node_id": node, "graph_type": "procedural"}))
+        """Rebuild the vector search index from NetworkX without invoking the LLM."""
+        entities = []
+        for node_id, data in self.semantic.nodes(data=True):
+            entities.append(EntityNode(name=node_id, label="semantic", properties=data))
+        for node_id, data in self.procedural.nodes(data=True):
+            entities.append(EntityNode(name=node_id, label="procedural", properties=data))
 
-        if docs:
-            self.property_graph = PropertyGraphIndex.from_documents(docs)
-        else:
-            self.property_graph = PropertyGraphIndex.from_documents([])
+        # Rebuild entirely bypassing LLM extraction
+        self.property_graph = PropertyGraphIndex(
+            nodes=entities,
+            kg_extractors=[],
+            embed_model=Settings.embed_model
+        )
 
     # -- GraphRAG context builder --------------------------------------------
 

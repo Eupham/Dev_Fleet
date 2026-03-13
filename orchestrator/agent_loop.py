@@ -50,6 +50,8 @@ class AgentState(TypedDict):
 # Node Functions
 # ---------------------------------------------------------------------------
 
+import uuid
+
 def decompose_node(state: AgentState) -> dict:
     """Decompose user prompt into Task DAG."""
     logger.info("Executing Decompose node...")
@@ -57,8 +59,22 @@ def decompose_node(state: AgentState) -> dict:
 
     dag = parse_prompt(state["user_prompt"])
 
+    # 1. CREATE THE ORIGIN/GOAL NODE
+    prompt_id = f"goal_{uuid.uuid4().hex[:8]}"
+    memory.add_episodic_node(prompt_id, {
+        "type": "UserPrompt",
+        "description": state["user_prompt"],
+        "status": "completed"
+    })
+
     for task in dag.tasks:
+        # 2. Add the Task Node
         memory.add_episodic_node(task.id, task.model_dump())
+
+        # 3. CREATE THE ANCESTRY EDGE (Parent -> Child)
+        memory.add_episodic_edge(prompt_id, task.id, {"relation": "decomposed_into"})
+
+        # 4. Create the execution dependency edges (Sibling -> Sibling)
         for dep_id in task.depends_on:
             memory.add_episodic_edge(dep_id, task.id, {"relation": "depends_on"})
 
