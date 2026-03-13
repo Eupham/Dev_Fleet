@@ -118,7 +118,7 @@ def _warmup() -> None:
 @app.cls(
     image=vllm_image,
     gpu="T4",
-    scaledown_window=5 * MINUTES,
+    scaledown_window=30,  # seconds — snapshots make cold-start fast; don't idle the GPU
     timeout=10 * MINUTES,
     retries=0,
     volumes={
