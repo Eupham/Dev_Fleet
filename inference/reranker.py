@@ -37,13 +37,13 @@ reranker_image = (
         "torch>=2.0",
         "transformers>=4.51.0",
         "huggingface-hub>=0.20",
+        "hf_transfer",
+    )
+    .run_commands(
+        [f"huggingface-cli download {RERANKER_MODEL}"],
+        env={"HF_HUB_ENABLE_HF_TRANSFER": "1", "HF_XET_HIGH_PERFORMANCE": "1"},
     )
     .add_local_python_source("fleet_app", copy=True)
-)
-
-# Cache model weights across container restarts
-reranker_cache_vol = modal.Volume.from_name(
-    "reranker-cache-vol", create_if_missing=True
 )
 
 # ---------------------------------------------------------------------------
@@ -53,7 +53,6 @@ reranker_cache_vol = modal.Volume.from_name(
 
 @app.cls(
     image=reranker_image,
-    volumes={"/root/.cache/huggingface": reranker_cache_vol},
     scaledown_window=5 * MINUTES,
     timeout=5 * MINUTES,
 )
