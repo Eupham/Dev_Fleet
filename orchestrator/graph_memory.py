@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import networkx as nx
 
@@ -97,6 +98,39 @@ SEMANTIC_PATH = STATE_DIR / "semantic_graph.json"
 PROCEDURAL_PATH = STATE_DIR / "procedural_graph.json"
 EPISODIC_PATH = STATE_DIR / "episodic_graph.json"
 
+_GRAPH_PATHS = (SEMANTIC_PATH, PROCEDURAL_PATH, EPISODIC_PATH)
+
+
+# ---------------------------------------------------------------------------
+# In-memory singleton cache with mtime-based dirty flag
+# ---------------------------------------------------------------------------
+
+_cache_lock = threading.Lock()
+_cached_instance: Optional["TriGraphMemory"] = None
+# Maps each path to its mtime at the time the cache was last populated.
+_cached_mtimes: Dict[Path, float] = {}
+
+
+def _current_mtimes() -> Dict[Path, float]:
+    """Return the current modification timestamps for the three graph files."""
+    return {p: p.stat().st_mtime if p.exists() else 0.0 for p in _GRAPH_PATHS}
+
+
+def _cache_is_valid() -> bool:
+    """Return True when every graph file mtime matches what is stored in the cache."""
+    if _cached_instance is None:
+        return False
+    current = _current_mtimes()
+    return all(current[p] == _cached_mtimes.get(p, -1.0) for p in _GRAPH_PATHS)
+
+
+def _invalidate_cache() -> None:
+    """Evict the singleton cache (called after save())."""
+    global _cached_instance, _cached_mtimes
+    with _cache_lock:
+        _cached_instance = None
+        _cached_mtimes = {}
+
 
 # ---------------------------------------------------------------------------
 # Graph wrapper
@@ -121,7 +155,7 @@ class TriGraphMemory:
     # -- Serialization -------------------------------------------------------
 
     def save(self) -> None:
-        """Persist all three graphs as JSON node-link data."""
+        """Persist all three graphs as JSON node-link data and evict the singleton cache."""
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         for graph, path in [
             (self.semantic, SEMANTIC_PATH),
@@ -130,23 +164,40 @@ class TriGraphMemory:
         ]:
             data = nx.node_link_data(graph)
             path.write_text(json.dumps(data, default=str))
+        # Evict the cache so the next load() reads the freshly written files.
+        _invalidate_cache()
 
     @classmethod
     def load(cls) -> "TriGraphMemory":
-        """Restore graphs from disk, or create empty ones if absent."""
-        mem = cls()
-        for attr, path in [
-            ("semantic", SEMANTIC_PATH),
-            ("procedural", PROCEDURAL_PATH),
-            ("episodic", EPISODIC_PATH),
-        ]:
-            if path.exists():
-                data = json.loads(path.read_text())
-                setattr(mem, attr, nx.node_link_graph(data))
+        """Restore graphs from disk, or return the in-memory singleton when the
+        underlying files have not changed since the last load.
 
-        # After loading networkx, rebuild PropertyGraph from Semantic/Procedural
-        mem._rebuild_property_graph()
-        return mem
+        This prevents the O(|V|+|E|) _rebuild_property_graph() from firing on
+        every LangGraph node invocation when state is unchanged.
+        """
+        global _cached_instance, _cached_mtimes
+
+        with _cache_lock:
+            if _cache_is_valid():
+                return _cached_instance  # type: ignore[return-value]
+
+            mem = cls()
+            for attr, path in [
+                ("semantic", SEMANTIC_PATH),
+                ("procedural", PROCEDURAL_PATH),
+                ("episodic", EPISODIC_PATH),
+            ]:
+                if path.exists():
+                    data = json.loads(path.read_text())
+                    setattr(mem, attr, nx.node_link_graph(data))
+
+            # Rebuild PropertyGraph (including edge Relations) from the loaded NX graphs.
+            mem._rebuild_property_graph()
+
+            # Populate the singleton cache.
+            _cached_instance = mem
+            _cached_mtimes = _current_mtimes()
+            return mem
 
     # -- Episodic helpers ----------------------------------------------------
 
@@ -171,6 +222,13 @@ class TriGraphMemory:
         # Also ingest into property graph
         self._ingest_node_to_pg(node_id, attrs, "semantic")
 
+    def add_semantic_edge(
+        self, src: str, dst: str, attrs: dict[str, Any] | None = None
+    ) -> None:
+        """Add a directed edge in the semantic graph and mirror it in the PropertyGraph."""
+        self.semantic.add_edge(src, dst, **(attrs or {}))
+        self._ingest_edge_to_pg(src, dst, (attrs or {}).get("relation", "related_to"))
+
     # -- Procedural helpers --------------------------------------------------
 
     def add_procedural_node(
@@ -179,6 +237,13 @@ class TriGraphMemory:
         self.procedural.add_node(node_id, **attrs)
         # Also ingest into property graph
         self._ingest_node_to_pg(node_id, attrs, "procedural")
+
+    def add_procedural_edge(
+        self, src: str, dst: str, attrs: dict[str, Any] | None = None
+    ) -> None:
+        """Add a directed edge in the procedural graph and mirror it in the PropertyGraph."""
+        self.procedural.add_edge(src, dst, **(attrs or {}))
+        self._ingest_edge_to_pg(src, dst, (attrs or {}).get("relation", "leads_to"))
 
 
     # -- Property Graph ingestion --------------------------------------------
@@ -205,6 +270,13 @@ class TriGraphMemory:
         )
         llama_node.metadata[KG_NODES_KEY] = [entity_node]
         self.property_graph.insert_nodes([llama_node])
+
+    def _ingest_edge_to_pg(self, src: str, dst: str, label: str) -> None:
+        """Upsert a single Relation edge into the LlamaIndex PropertyGraph store."""
+        if self.property_graph is None:
+            return
+        relation = Relation(source_id=src, target_id=dst, label=label)
+        self.property_graph.property_graph_store.upsert_relation(relation)
 
     def _rebuild_property_graph(self):
         from llama_index.core.graph_stores.types import KG_NODES_KEY
@@ -241,6 +313,23 @@ class TriGraphMemory:
 
         if nodes_to_insert:
             self.property_graph.insert_nodes(nodes_to_insert)
+
+        # Sync NetworkX structural edges as LlamaIndex Relation objects so the
+        # PropertyGraph retriever can traverse them (true multi-hop GraphRAG).
+        relations_to_insert = []
+
+        for u, v, data in self.semantic.edges(data=True):
+            relations_to_insert.append(
+                Relation(source_id=u, target_id=v, label=data.get("relation", "related_to"))
+            )
+
+        for u, v, data in self.procedural.edges(data=True):
+            relations_to_insert.append(
+                Relation(source_id=u, target_id=v, label=data.get("relation", "leads_to"))
+            )
+
+        for rel in relations_to_insert:
+            self.property_graph.property_graph_store.upsert_relation(rel)
 
     # -- GraphRAG context builder --------------------------------------------
 

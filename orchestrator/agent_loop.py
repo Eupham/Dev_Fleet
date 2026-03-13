@@ -70,33 +70,49 @@ def decompose_node(state: AgentState) -> dict:
 
 
 def rerank_and_retrieve_node(state: AgentState) -> dict:
-    """Score task edges against semantic, procedural, and episodic graphs via Qwen3-Reranker and link above threshold."""
+    """Score task edges against semantic/procedural graphs via a Retrieve-then-Rerank pipeline.
+
+    Stage 1 (Bi-encoder ANN): Uses the PropertyGraphIndex retriever with the fast Qwen3
+    embedding model to narrow the full graph vertex set down to a top-k neighbourhood.
+    Stage 2 (Cross-encoder): Runs Qwen3-Reranker only over the retrieved neighbourhood,
+    reducing complexity from O(V×T) to O(k×T) where k << V.
+    """
     logger.info("Executing Rerank_and_Retrieve node...")
     memory = TriGraphMemory.load()
     dag = state["dag"]
 
     update = {}
     if dag:
-        candidates = []
-        for n in memory.semantic.nodes:
-            candidates.append({"id": n, "graph": "semantic", "description": json.dumps(memory.semantic.nodes[n], default=str)})
-        for n in memory.procedural.nodes:
-            candidates.append({"id": n, "graph": "procedural", "description": json.dumps(memory.procedural.nodes[n], default=str)})
-        for n in memory.episodic.nodes:
-            # Avoid self-referencing if nodes share IDs somehow (they usually won't)
-            candidates.append({"id": n, "graph": "episodic", "description": json.dumps(memory.episodic.nodes[n], default=str)})
+        for task in dag.tasks:
+            # Stage 1 — Bi-encoder: retrieve top-15 semantically similar nodes
+            retriever = memory.property_graph.as_retriever(similarity_top_k=15)
+            retrieved_nodes = retriever.retrieve(task.description)
 
-        if candidates:
-            for task in dag.tasks:
+            candidates = []
+            for node in retrieved_nodes:
+                node_id = node.metadata.get("node_id")
+                graph_type = node.metadata.get("graph_type")
+                if node_id:
+                    candidates.append({
+                        "id": node_id,
+                        "graph": graph_type or "unknown",
+                        "description": node.text,
+                    })
+
+            # Stage 2 — Cross-encoder: score only the retrieved neighbourhood
+            if candidates:
                 edges = rerank_candidates(task.id, task.description, candidates)
                 for edge in edges:
-                    # Find which graph this candidate came from to tag the edge properly
-                    graph_type = next((c["graph"] for c in candidates if c["id"] == edge.candidate_id), "unknown")
+                    graph_type = next(
+                        (c["graph"] for c in candidates if c["id"] == edge.candidate_id),
+                        "unknown",
+                    )
                     memory.add_episodic_edge(
                         task.id, edge.candidate_id,
                         {"graph": graph_type, "score": edge.score},
                     )
-        update["messages"] = ["Reranked and linked episodic tasks to semantic, procedural, and episodic knowledge."]
+
+        update["messages"] = ["Reranked and linked episodic tasks to semantic and procedural knowledge."]
 
     memory.save()
     return update
