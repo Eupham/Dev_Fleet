@@ -14,6 +14,8 @@ web_image = (
     .add_local_python_source("orchestrator")
     .add_local_python_source("inference")
     .add_local_python_source("ui")
+    .add_local_file("fix_chainlit.py", "/tmp/fix_chainlit.py")
+    .run_commands(["python3 /tmp/fix_chainlit.py"])
 )
 
 try:
@@ -111,6 +113,7 @@ except ImportError:
 @app.function(
     image=web_image,
     min_containers=1,
+    timeout=3600,  # allow 1-hour WebSocket sessions (Modal default is 300s)
 )
 @modal.concurrent(max_inputs=100)
 @modal.web_server(port=8000)
