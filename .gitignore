@@ -35,3 +35,7 @@ htmlcov/
 /tmp/
 *.log
 .chainlit/translations
+
+# Local bridge tooling (contains credentials — never commit)
+auto_deploy.py
+payload.zip

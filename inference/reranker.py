@@ -62,7 +62,7 @@ reranker_cache_vol = modal.Volume.from_name(
 class Reranker:
     """Qwen3-Reranker-0.6B cross-encoder for graph-edge scoring."""
 
-    @modal.enter()
+    @modal.enter(snap=True)
     def load_model(self):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer

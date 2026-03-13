@@ -52,7 +52,9 @@ class TaskDAG(BaseModel):
 # ---------------------------------------------------------------------------
 
 DECOMPOSITION_SYSTEM = """You are a task decomposition engine.
-Given a user prompt, break it into the SMALLEST possible atomic sub-tasks."""
+Given a user prompt, break it into AT MOST 5 atomic sub-tasks.
+Be concise — keep each task description under 60 words.
+Return the minimal number of tasks needed; simple prompts need only 1-2 tasks."""
 
 
 def _build_decomposition_messages(
@@ -90,13 +92,24 @@ def parse_prompt(
 
     messages = _build_decomposition_messages(user_prompt)
 
-    # We pass the schema directly; the backend uses outlines to enforce structured generation
-    dag: TaskDAG = chat_completion(
-        messages, model=model, temperature=0.2, max_tokens=2048, schema=TaskDAG
-    )
+    # We pass the schema directly; the backend uses xgrammar to enforce structured generation.
+    # max_tokens=512 is enough for 5 tasks; the 0.5B model can over-generate without this cap.
+    try:
+        dag: TaskDAG = chat_completion(
+            messages, model=model, temperature=0.2, max_tokens=512, schema=TaskDAG
+        )
+    except Exception as e:
+        # Fallback: treat the entire prompt as a single task so the agent always proceeds.
+        import logging
+        logging.getLogger("dev_fleet.frege_parser").warning(
+            "Task decomposition failed (%s). Falling back to single-task DAG.", e
+        )
+        return TaskDAG(
+            user_prompt=user_prompt,
+            tasks=[AtomicTaskNode(description=user_prompt[:500])],
+        )
 
-    # The output is directly guaranteed to be a TaskDAG.
-    # Let's populate user_prompt if empty to be safe
+    # Populate user_prompt if empty to be safe
     dag.user_prompt = user_prompt
 
     # Map any index-based depends_on to UUIDs for safety
