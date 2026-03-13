@@ -12,16 +12,75 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, List
 
 import networkx as nx
 
 from llama_index.core import PropertyGraphIndex
+from llama_index.core.graph_stores import SimplePropertyGraphStore
+from llama_index.core.graph_stores.types import EntityNode, Relation
 from llama_index.core import Document, Settings
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.core.embeddings import BaseEmbedding
 
-# Configure local HuggingFace embedding model globally using Qwen3 collection.
-Settings.embed_model = HuggingFaceEmbedding(model_name="Qwen/Qwen3-Embedding-0.6B")
+
+# ---------------------------------------------------------------------------
+# Zero-Trust Custom Embeddings using Modal RPC
+# ---------------------------------------------------------------------------
+
+class ModalEmbeddings(BaseEmbedding):
+    """Routes embedding requests to the isolated Modal Embedder service."""
+
+    def _get_query_embedding(self, query: str) -> List[float]:
+        from inference.embedder import Embedder
+        import modal
+        try:
+            return Embedder().encode.remote([query])[0]
+        except Exception:
+            return modal.Cls.from_name("devfleet", "Embedder")().encode.remote([query])[0]
+
+    def _get_text_embedding(self, text: str) -> List[float]:
+        from inference.embedder import Embedder
+        import modal
+        try:
+            return Embedder().encode.remote([text])[0]
+        except Exception:
+            return modal.Cls.from_name("devfleet", "Embedder")().encode.remote([text])[0]
+
+    def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
+        from inference.embedder import Embedder
+        import modal
+        try:
+            return Embedder().encode.remote(texts)
+        except Exception:
+            return modal.Cls.from_name("devfleet", "Embedder")().encode.remote(texts)
+
+    async def _aget_query_embedding(self, query: str) -> List[float]:
+        from inference.embedder import Embedder
+        import modal
+        try:
+            result = await Embedder().encode.remote.aio([query])
+        except Exception:
+            result = await modal.Cls.from_name("devfleet", "Embedder")().encode.remote.aio([query])
+        return result[0]
+
+    async def _aget_text_embedding(self, text: str) -> List[float]:
+        from inference.embedder import Embedder
+        import modal
+        try:
+            result = await Embedder().encode.remote.aio([text])
+        except Exception:
+            result = await modal.Cls.from_name("devfleet", "Embedder")().encode.remote.aio([text])
+        return result[0]
+
+    async def _aget_text_embeddings(self, texts: List[str]) -> List[List[float]]:
+        from inference.embedder import Embedder
+        import modal
+        try:
+            return await Embedder().encode.remote.aio(texts)
+        except Exception:
+            return await modal.Cls.from_name("devfleet", "Embedder")().encode.remote.aio(texts)
+
+Settings.embed_model = ModalEmbeddings()
 
 # Configure custom LlamaIndex LLM to use Modal vLLM
 from orchestrator.llm_client import ModalVLLM
