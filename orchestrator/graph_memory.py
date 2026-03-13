@@ -35,51 +35,51 @@ class ModalEmbeddings(BaseEmbedding):
         from inference.embedder import Embedder
         import modal
         try:
-            return Embedder().encode.remote([query])[0]
-        except Exception:
             return modal.Cls.from_name("dev_fleet", "Embedder")().encode.remote([query])[0]
+        except Exception:
+            return Embedder().encode.remote([query])[0]
 
     def _get_text_embedding(self, text: str) -> List[float]:
         from inference.embedder import Embedder
         import modal
         try:
-            return Embedder().encode.remote([text])[0]
-        except Exception:
             return modal.Cls.from_name("dev_fleet", "Embedder")().encode.remote([text])[0]
+        except Exception:
+            return Embedder().encode.remote([text])[0]
 
     def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
         from inference.embedder import Embedder
         import modal
         try:
-            return Embedder().encode.remote(texts)
-        except Exception:
             return modal.Cls.from_name("dev_fleet", "Embedder")().encode.remote(texts)
+        except Exception:
+            return Embedder().encode.remote(texts)
 
     async def _aget_query_embedding(self, query: str) -> List[float]:
         from inference.embedder import Embedder
         import modal
         try:
-            result = await Embedder().encode.remote.aio([query])
-        except Exception:
             result = await modal.Cls.from_name("dev_fleet", "Embedder")().encode.remote.aio([query])
+        except Exception:
+            result = await Embedder().encode.remote.aio([query])
         return result[0]
 
     async def _aget_text_embedding(self, text: str) -> List[float]:
         from inference.embedder import Embedder
         import modal
         try:
-            result = await Embedder().encode.remote.aio([text])
-        except Exception:
             result = await modal.Cls.from_name("dev_fleet", "Embedder")().encode.remote.aio([text])
+        except Exception:
+            result = await Embedder().encode.remote.aio([text])
         return result[0]
 
     async def _aget_text_embeddings(self, texts: List[str]) -> List[List[float]]:
         from inference.embedder import Embedder
         import modal
         try:
-            return await Embedder().encode.remote.aio(texts)
-        except Exception:
             return await modal.Cls.from_name("dev_fleet", "Embedder")().encode.remote.aio(texts)
+        except Exception:
+            return await Embedder().encode.remote.aio(texts)
 
 Settings.embed_model = ModalEmbeddings()
 
@@ -150,7 +150,7 @@ class TriGraphMemory:
 
     def __post_init__(self):
         # Initialize an empty Property Graph using the global HF embeddings and Modal vLLM.
-        self.property_graph = PropertyGraphIndex.from_documents([])
+        self.property_graph = PropertyGraphIndex.from_documents([], kg_extractors=[])
 
     # -- Serialization -------------------------------------------------------
 

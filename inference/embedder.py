@@ -25,8 +25,11 @@ embedder_image = (
     .pip_install(
         "sentence-transformers>=2.0.0",
         "huggingface-hub",
+        "hf-transfer",
     )
     .add_local_python_source("fleet_app", copy=True)
+    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1", "HF_XET_HIGH_PERFORMANCE": "1"})
+    .run_commands([f"python -c 'from huggingface_hub import snapshot_download; snapshot_download(\"{MODEL_NAME}\")'"])
 )
 
 

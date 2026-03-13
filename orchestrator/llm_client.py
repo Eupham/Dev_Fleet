@@ -31,10 +31,10 @@ def chat_completion(
     # Fallback to dynamically loading the remote class from the deployed "dev_fleet" app
     # when called from isolated container contexts (like the test runner or chainlit).
     try:
+        inference_inst = modal.Cls.from_name("dev_fleet", "Inference")()
+    except Exception:
         from inference.server import Inference
         inference_inst = Inference()
-    except Exception:
-        inference_inst = modal.Cls.from_name("dev_fleet", "Inference")()
 
     try:
         loop = asyncio.get_running_loop()

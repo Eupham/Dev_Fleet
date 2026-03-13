@@ -149,10 +149,9 @@ def parse_prompt(
     messages = _build_decomposition_messages(user_prompt, codebase_context=codebase_context)
 
     # We pass the schema directly; the backend uses xgrammar to enforce structured generation.
-    # max_tokens=512 is enough for 5 tasks; the 0.5B model can over-generate without this cap.
     try:
         dag: TaskDAG = chat_completion(
-            messages, model=model, temperature=0.2, max_tokens=512, schema=TaskDAG
+            messages, model=model, temperature=0.2, max_tokens=4096, schema=TaskDAG
         )
     except Exception as e:
         # Fallback: treat the entire prompt as a single task so the agent always proceeds.
