@@ -6,7 +6,11 @@ All orchestrator modules call ``chat_completion()`` which routes to
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
+from pydantic import BaseModel
+
+from llama_index.core.llms import CustomLLM, CompletionResponse, LLMMetadata
+from llama_index.core.llms.callbacks import llm_completion_callback
 
 
 def chat_completion(
@@ -14,15 +18,16 @@ def chat_completion(
     model: str = "llm",
     temperature: float = 0.3,
     max_tokens: int = 4096,
-) -> str:
+    schema: Optional[type[BaseModel]] = None,
+) -> Any:
     """Send a chat completion request via Modal-native RPC.
 
-    Returns the generated text from the model.
+    Returns the generated text from the model, or a Pydantic object if schema is provided.
     """
     from inference.server import Inference
 
     return Inference().generate.remote(
-        messages, model=model, temperature=temperature, max_tokens=max_tokens,
+        messages, model=model, temperature=temperature, max_tokens=max_tokens, schema=schema
     )
 
 
@@ -56,3 +61,36 @@ def generate(
         {"role": "user", "content": task_description},
     ]
     return chat_completion(messages, model=model, temperature=0.3, max_tokens=4096)
+
+
+class ModalVLLM(CustomLLM):
+    """Custom LlamaIndex LLM wrapper that routes to our Modal vLLM engine."""
+
+    context_window: int = 8192
+    num_output: int = 4096
+    model_name: str = "llm"
+    temperature: float = 0.3
+
+    @property
+    def metadata(self) -> LLMMetadata:
+        return LLMMetadata(
+            context_window=self.context_window,
+            num_output=self.num_output,
+            model_name=self.model_name,
+            is_chat_model=True,
+        )
+
+    @llm_completion_callback()
+    def complete(self, prompt: str, **kwargs: Any) -> CompletionResponse:
+        messages = [{"role": "user", "content": prompt}]
+        response_text = chat_completion(
+            messages=messages,
+            model=self.model_name,
+            temperature=self.temperature,
+            max_tokens=self.num_output,
+        )
+        return CompletionResponse(text=response_text)
+
+    @llm_completion_callback()
+    def stream_complete(self, prompt: str, **kwargs: Any):
+        raise NotImplementedError("Streaming is not supported via this simple RPC wrapper.")

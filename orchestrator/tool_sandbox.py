@@ -8,6 +8,9 @@ runs the command, and captures stdout/stderr/exit-code.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional, Dict
+
+from smolagents import Tool
 
 
 # ---------------------------------------------------------------------------
@@ -29,7 +32,97 @@ class SandboxResult:
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Tool Sandbox Class
+# ---------------------------------------------------------------------------
+
+
+class ModalSandboxTool(Tool):
+    """A tool to execute bash or python code in a secure, ephemeral Modal sandbox."""
+
+    name = "modal_sandbox_tool"
+    description = (
+        "Run code inside an ephemeral Modal Sandbox. "
+        "Useful for safely executing untrusted Python or Bash code. "
+        "Returns a dict with stdout, stderr, and exit_code."
+    )
+    inputs = {
+        "code": {
+            "type": "string",
+            "description": "Source code or shell commands to execute."
+        },
+        "language": {
+            "type": "string",
+            "description": "The language to execute, either 'python' or 'bash'.",
+            "nullable": True
+        },
+        "env": {
+            "type": "object",
+            "description": "Optional environment variables passed to the sandbox.",
+            "nullable": True
+        },
+        "timeout": {
+            "type": "integer",
+            "description": "Maximum execution time in seconds.",
+            "nullable": True
+        }
+    }
+    output_type = "any" # Dictionary containing stdout, stderr, and exit_code
+
+    def forward(
+        self,
+        code: str,
+        language: str = "python",
+        env: Optional[Dict[str, str]] = None,
+        timeout: int = 120,
+    ) -> dict:
+        """Run *code* inside an ephemeral Modal Sandbox."""
+        import modal  # lazy import — only needed at runtime on Modal
+
+        # Add basic dependencies to sandbox image
+        _sandbox_image = modal.Image.debian_slim(python_version="3.12").pip_install(
+            "pydantic>=2.5",
+        )
+
+        workspace_vol = modal.Volume.from_name(
+            "devfleet-workspace", create_if_missing=True
+        )
+
+        app_ref = modal.App.lookup("devfleet", create_if_missing=True)
+
+        sandbox = modal.Sandbox.create(
+            app=app_ref,
+            image=_sandbox_image,
+            timeout=timeout,
+            volumes={"/workspace": workspace_vol},
+            **({"environment_variables": env} if env else {}),
+        )
+
+        try:
+            if language == "python":
+                proc = sandbox.exec("python", "-c", code)
+            else:
+                proc = sandbox.exec("bash", "-c", code)
+
+            stdout = proc.stdout.read()
+            stderr = proc.stderr.read()
+            exit_code = proc.returncode
+        except Exception as exc:
+            stdout = ""
+            stderr = str(exc)
+            exit_code = 1
+        finally:
+            sandbox.terminate()
+
+        # We return a dict as expected by the new Tool abstraction
+        return {
+            "stdout": stdout,
+            "stderr": stderr,
+            "exit_code": exit_code if exit_code is not None else 1,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Public API Backwards Compatibility
 # ---------------------------------------------------------------------------
 
 
@@ -56,44 +149,10 @@ def execute_in_sandbox(
     -------
     SandboxResult with stdout, stderr, and exit_code.
     """
-    import modal  # lazy import — only needed at runtime on Modal
-
-    _sandbox_image = modal.Image.debian_slim(python_version="3.12").pip_install(
-        "pydantic>=2.5",
-    )
-
-    workspace_vol = modal.Volume.from_name(
-        "devfleet-workspace", create_if_missing=True
-    )
-
-    app_ref = modal.App.lookup("devfleet", create_if_missing=True)
-
-    sandbox = modal.Sandbox.create(
-        app=app_ref,
-        image=_sandbox_image,
-        timeout=timeout,
-        volumes={"/workspace": workspace_vol},
-        **({"environment_variables": env} if env else {}),
-    )
-
-    try:
-        if language == "python":
-            proc = sandbox.exec("python", "-c", code)
-        else:
-            proc = sandbox.exec("bash", "-c", code)
-
-        stdout = proc.stdout.read()
-        stderr = proc.stderr.read()
-        exit_code = proc.returncode
-    except Exception as exc:
-        stdout = ""
-        stderr = str(exc)
-        exit_code = 1
-    finally:
-        sandbox.terminate()
-
+    tool = ModalSandboxTool()
+    res = tool.forward(code=code, language=language, env=env, timeout=timeout)
     return SandboxResult(
-        stdout=stdout,
-        stderr=stderr,
-        exit_code=exit_code if exit_code is not None else 1,
+        stdout=res["stdout"],
+        stderr=res["stderr"],
+        exit_code=res["exit_code"]
     )

@@ -14,8 +14,10 @@ The ``Inference`` class exposes two interfaces:
 import socket
 import subprocess
 import time
+from typing import Any, Optional
 
 import modal
+from pydantic import BaseModel
 
 from fleet_app import app  # shared app defined in app.py
 
@@ -44,6 +46,7 @@ vllm_image = (
         "vllm==0.7.3",
         "huggingface-hub==0.36.0",
         "hf_transfer",
+        "outlines>=0.0.38",
     )
     .env(
         {
@@ -60,6 +63,8 @@ vllm_image = (
 # Make `requests` importable inside the container for health-polling
 with vllm_image.imports():
     import requests
+    import json
+    import outlines
 
 # ---------------------------------------------------------------------------
 # Volumes — persistent caches for weights and vLLM compilation artifacts
@@ -171,24 +176,50 @@ class Inference:
         model: str = "llm",
         temperature: float = 0.3,
         max_tokens: int = 4096,
-    ) -> str:
+        schema: Optional[type[BaseModel]] = None,
+    ) -> Any:
         """Modal-native RPC — called by the orchestrator via ``.remote()``.
 
         Forwards the request to the local vLLM subprocess and returns
         the generated text directly.  No external HTTP round-trip.
+        If a Pydantic schema is provided, uses vLLM's native JSON mode to constrain the output.
         """
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        resp = requests.post(
-            f"http://localhost:{VLLM_PORT}/v1/chat/completions",
-            json=payload,
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        if schema:
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": schema.__name__,
+                        "schema": schema.model_json_schema()
+                    }
+                }
+            }
+            resp = requests.post(
+                f"http://localhost:{VLLM_PORT}/v1/chat/completions",
+                json=payload,
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"]
+            # Validate and return the Pydantic model directly
+            return schema.model_validate_json(content)
+
+        else:
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            resp = requests.post(
+                f"http://localhost:{VLLM_PORT}/v1/chat/completions",
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
 
     @modal.web_server(port=VLLM_PORT, startup_timeout=10 * MINUTES)
     def serve(self):
