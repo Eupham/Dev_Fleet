@@ -7,8 +7,9 @@ from fleet_app import app
 web_image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install(
-        "fastapi", "uvicorn", "jinja2", "python-multipart", "pydantic>=2.5", "networkx>=3.2", "chainlit>=1.1.0", "pyvis>=0.3.2",
-        "llama-index-core>=0.10.0", "llama-index>=0.10.0", "llama-index-embeddings-huggingface>=0.1.0",
+        "fastapi", "uvicorn", "jinja2", "python-multipart", "pydantic>=2.5", "networkx>=3.2",
+        "chainlit>=1.1.0",
+        "llama-index-core>=0.10.0", "llama-index-embeddings-huggingface>=0.1.0",
         "smolagents>=1.0.0",
     )
     .add_local_python_source("fleet_app", copy=True)
@@ -49,6 +50,9 @@ try:
         graph_msg.elements = loading_elements
         await graph_msg.update()
 
+        # Track the latest Mermaid graph so we can show it after the loop ends
+        final_graph_markdown = ""
+
         # Iterate over the generator from Modal
         async for update in run_agent_stream_func.remote_gen.aio(prompt):
             step_name = update["step"]
@@ -79,7 +83,15 @@ try:
                 # Show sandbox results if any
                 if "sandbox_results" in state_snapshot and state_snapshot["sandbox_results"]:
                     latest_sandbox = state_snapshot["sandbox_results"][-1]
-                    content_lines.append(f"\n**Tool Execution Result:**\n```\n{latest_sandbox}\n```")
+                    # Handle both dict (JSON-serialised) and dataclass object (in-process)
+                    if isinstance(latest_sandbox, dict):
+                        stdout = latest_sandbox.get("stdout", "")
+                        exit_code = latest_sandbox.get("exit_code", 0)
+                    else:
+                        stdout = getattr(latest_sandbox, "stdout", "")
+                        exit_code = getattr(latest_sandbox, "exit_code", 0)
+                    status_icon = "✅ Success" if exit_code == 0 else "❌ Failed"
+                    content_lines.append(f"\n**Tool Execution ({status_icon}):**\n```\n{stdout[:1000]}\n```")
 
                 step.output = "\n".join(content_lines) if content_lines else json.dumps(state_snapshot, indent=2, default=str)
 
@@ -105,12 +117,13 @@ try:
             mermaid_lines.append("```")
 
             graph_markdown = "\n".join(mermaid_lines)
+            final_graph_markdown = graph_markdown  # persist latest state for finalize
             graph_msg.content = f"*Executing Node: {step_name}...*\n\n{graph_markdown}"
             graph_msg.elements = []
             await graph_msg.update()
 
-        # Finalize
-        graph_msg.content = "**Execution Complete. Final Graph State:**"
+        # Finalize — preserve the last rendered graph instead of wiping it
+        graph_msg.content = f"**Execution Complete. Final Graph State:**\n\n{final_graph_markdown}"
         await graph_msg.update()
         await cl.Message(content="Task completed successfully.").send()
 

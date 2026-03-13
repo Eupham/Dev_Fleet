@@ -60,6 +60,10 @@ vllm_image = (
             "TORCHINDUCTOR_COMPILE_THREADS": "1",
             # Required for snapshot survival without NCCL socket crashes
             "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
+            # Prevent NCCL from probing hardware topology across physical nodes
+            "NCCL_WARN_DISABLE": "1",
+            # Keep vLLM logs at WARNING to reduce modal app logs noise
+            "VLLM_LOGGING_LEVEL": "WARNING",
         }
     )
 )
@@ -134,6 +138,11 @@ class Inference:
     @modal.enter(snap=True)
     def start(self):
         """Start vLLM, warm up, and snapshot."""
+        import os as _os
+        # Blind PyTorch/NCCL to any ghost GPUs visible to cgroups on multi-GPU chassis;
+        # IPC handles for non-primary GPUs cannot survive a CRIU physical-node migration.
+        _os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
         cmd = [
             "vllm",
             "serve",
@@ -150,6 +159,9 @@ class Inference:
             "--gpu-memory-utilization",
             "0.90",
             "--disable-log-requests",  # Silences the massive prompt strings in logs
+            # Disable CUDA-IPC custom allocator — shared-memory handles don't survive
+            # CRIU migration to a different physical node, causing CudaCheckpointException.
+            "--disable-custom-all-reduce",
             # Snapshot-specific flags
             "--enforce-eager",
             "--dtype=half",
