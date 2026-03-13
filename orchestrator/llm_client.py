@@ -27,9 +27,15 @@ def chat_completion(
     import modal
     import asyncio
 
-    # We dynamically load the remote class to ensure it's hydrated when called
-    # from isolated container contexts (like the test runner or chainlit).
-    inference_cls = modal.Cls.from_name("dev_fleet", "Inference")
+    # Try importing the Inference class directly from the local app for ephemeral runs.
+    # Fallback to dynamically loading the remote class from the deployed "dev_fleet" app
+    # when called from isolated container contexts (like the test runner or chainlit).
+    try:
+        from inference.server import Inference
+        inference_inst = Inference()
+    except Exception:
+        inference_inst = modal.Cls.from_name("dev_fleet", "Inference")()
+
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -44,12 +50,12 @@ def chat_completion(
         import warnings
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            return inference_cls().generate.remote(
+            return inference_inst.generate.remote(
                 messages, model=model, temperature=temperature, max_tokens=max_tokens, schema=schema
             )
     else:
         # No running event loop. Safe to use blocking .remote()
-        return inference_cls().generate.remote(
+        return inference_inst.generate.remote(
             messages, model=model, temperature=temperature, max_tokens=max_tokens, schema=schema
         )
 
