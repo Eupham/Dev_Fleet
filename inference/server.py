@@ -123,7 +123,6 @@ def _warmup() -> None:
     timeout=10 * MINUTES,
     retries=0,
     volumes={
-        "/root/.cache/huggingface": hf_cache_vol,
         "/root/.cache/vllm": vllm_cache_vol,
     },
     enable_memory_snapshot=True,
