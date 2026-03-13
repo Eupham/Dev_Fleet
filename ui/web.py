@@ -8,7 +8,8 @@ web_image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install(
         "fastapi", "uvicorn", "jinja2", "python-multipart", "pydantic>=2.5", "networkx>=3.2", "chainlit>=1.1.0", "pyvis>=0.3.2",
-        "llama-index-core>=0.10.0", "llama-index>=0.10.0", "llama-index-embeddings-huggingface>=0.1.0"
+        "llama-index-core>=0.10.0", "llama-index>=0.10.0", "llama-index-embeddings-huggingface>=0.1.0",
+        "smolagents>=1.0.0",
     )
     .add_local_python_source("fleet_app", copy=True)
     .add_local_python_source("orchestrator", copy=True)
@@ -64,9 +65,9 @@ try:
                 content_lines = []
 
                 # Show the task DAG cleanly if it's the Decompose step
-                if step_name == "Decompose" and "task_dag" in state_snapshot and state_snapshot["task_dag"]:
+                if step_name == "Decompose" and "dag" in state_snapshot and state_snapshot["dag"]:
                     content_lines.append("**Tasks Decomposed:**")
-                    tasks = state_snapshot["task_dag"].get("tasks", []) if isinstance(state_snapshot["task_dag"], dict) else getattr(state_snapshot["task_dag"], "tasks", [])
+                    tasks = state_snapshot["dag"].get("tasks", []) if isinstance(state_snapshot["dag"], dict) else getattr(state_snapshot["dag"], "tasks", [])
                     for t in tasks:
                         desc = t.get("description", "") if isinstance(t, dict) else getattr(t, "description", "")
                         content_lines.append(f"- {desc}")
@@ -82,21 +83,29 @@ try:
 
                 step.output = "\n".join(content_lines) if content_lines else json.dumps(state_snapshot, indent=2, default=str)
 
-            # Summarise the Tri-Graph state as text (cl.Html is not available in this
-            # Chainlit version; switching to a structured text element avoids the KeyError crash)
+            # Render the episodic Tri-Graph as a native Mermaid diagram inside Chainlit markdown
             mem = TriGraphMemory()
-            mem.semantic = nx.node_link_graph(graphs_dict["semantic"])
-            mem.procedural = nx.node_link_graph(graphs_dict["procedural"])
             mem.episodic = nx.node_link_graph(graphs_dict["episodic"])
 
-            graph_summary = (
-                f"**Tri-Graph state** — "
-                f"episodic: {mem.episodic.number_of_nodes()} nodes / {mem.episodic.number_of_edges()} edges | "
-                f"semantic: {mem.semantic.number_of_nodes()} nodes | "
-                f"procedural: {mem.procedural.number_of_nodes()} nodes"
-            )
+            mermaid_lines = ["```mermaid", "graph TD"]
+            for node, data in mem.episodic.nodes(data=True):
+                label = str(data.get("description", node)).replace('"', "'")
+                if len(label) > 30:
+                    label = label[:27] + "..."
+                status = data.get("status", "pending")
+                mermaid_lines.append(f'    {node}["{label}"]')
+                if status == "success":
+                    mermaid_lines.append(f"    style {node} fill:#2ecc71,stroke:#27ae60,stroke-width:2px,color:#fff")
+                elif status == "failed":
+                    mermaid_lines.append(f"    style {node} fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff")
+                elif status == "running":
+                    mermaid_lines.append(f"    style {node} fill:#f39c12,stroke:#d35400,stroke-width:2px,color:#fff")
+            for u, v, _ in mem.episodic.edges(data=True):
+                mermaid_lines.append(f"    {u} --> {v}")
+            mermaid_lines.append("```")
 
-            graph_msg.content = f"*Executing Node: {step_name}...*\n\n{graph_summary}"
+            graph_markdown = "\n".join(mermaid_lines)
+            graph_msg.content = f"*Executing Node: {step_name}...*\n\n{graph_markdown}"
             graph_msg.elements = []
             await graph_msg.update()
 
@@ -111,8 +120,16 @@ except ImportError:
     pass
 
 
+graph_state_vol = modal.Volume.from_name("dev_fleet-graph-state", create_if_missing=True)
+workspace_vol = modal.Volume.from_name("dev_fleet-workspace", create_if_missing=True)
+
+
 @app.function(
     image=web_image,
+    volumes={
+        "/state": graph_state_vol,
+        "/workspace": workspace_vol,
+    },
     min_containers=1,
     timeout=3600,  # allow 1-hour WebSocket sessions (Modal default is 300s)
 )
