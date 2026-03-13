@@ -51,12 +51,11 @@ vllm_image = (
     .run_commands(
         [
             f"huggingface-cli download {MODEL_NAME}",
-        ]
+        ],
+        env={"HF_HUB_ENABLE_HF_TRANSFER": "1", "HF_XET_HIGH_PERFORMANCE": "1"},
     )
     .env(
         {
-            "HF_HUB_ENABLE_HF_TRANSFER": "1",
-            "HF_XET_HIGH_PERFORMANCE": "1",
             "VLLM_SERVER_DEV_MODE": "0",
             "TORCHINDUCTOR_COMPILE_THREADS": "1",
             # Required for snapshot survival without NCCL socket crashes
@@ -119,7 +118,7 @@ def _warmup() -> None:
 @app.cls(
     image=vllm_image,
     gpu="T4",
-    scaledown_window=5 * MINUTES,
+    scaledown_window=0,  # scale down immediately after last request; snapshots handle cold-start
     timeout=10 * MINUTES,
     retries=0,
     volumes={
