@@ -1,5 +1,4 @@
 import modal
-from fastapi import FastAPI
 from fleet_app import app
 
 # Create a lightweight CPU image for the web UI. We explicitly add the fleet_app, orchestrator, and inference modules
