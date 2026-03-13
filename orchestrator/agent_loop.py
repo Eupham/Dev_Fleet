@@ -11,8 +11,17 @@ from __future__ import annotations
 import json
 import logging
 import operator
+import os
 import re
+import warnings
 from typing import Annotated, Any, List, Optional, TypedDict
+
+# Silence LangGraph custom-type serialization warnings (non-fatal, cosmetic noise)
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    module="langgraph.checkpoint.serde.jsonplus",
+)
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
