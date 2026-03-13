@@ -93,14 +93,22 @@ class TaskDAG(BaseModel):
 # Decomposition prompt template
 # ---------------------------------------------------------------------------
 
-DECOMPOSITION_SYSTEM = """You are a task decomposition engine. First, generate an `intent_observation` interpreting the core goal of the request. Then, generate the necessary atomic sub-tasks to fulfill that goal."""
+DECOMPOSITION_SYSTEM = """You are a task decomposition engine operating inside an isolated sandbox.
+
+First, write an `intent_observation` that captures the user's core goal in one or two sentences.
+
+Then generate the atomic sub-tasks needed to fulfil that goal. Use the Codebase Mini-Map below as your guide — it lists relevant file paths and a hint about each file's contents, but you do NOT have the actual file contents yet. Your first sub-tasks must therefore use bash (`cat`, `grep`, `find`) or Python (`open()`, `pathlib`) to read and explore those files before attempting any modifications. Generate only as many tasks as the complexity warrants."""
 
 
 def _build_decomposition_messages(
     user_prompt: str,
     codebase_context: str = "",
 ) -> list[dict[str, str]]:
-    context_block = f"Here is the relevant codebase context:\n{codebase_context}\n\n" if codebase_context else ""
+    context_block = (
+        f"Codebase Mini-Map (relevant files — contents not yet loaded):\n{codebase_context}\n\n"
+        if codebase_context
+        else ""
+    )
     explicit_user_message = (
         "The following text is the user prompt:\n"
         f"{user_prompt}\n\n"

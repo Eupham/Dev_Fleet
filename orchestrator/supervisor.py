@@ -73,10 +73,7 @@ def supervisor_node(state: "AgentState") -> dict:
         intent = "DECOMPOSE"
 
     logger.info("Supervisor classified intent as %s", intent)
-    return {
-        "intent": intent,
-        "messages": [f"Supervisor classified intent as {intent}"],
-    }
+    return {"intent": intent}
 
 
 def conversation_node(state: "AgentState") -> dict:
@@ -124,6 +121,6 @@ def direct_execute_node(state: "AgentState") -> dict:
     )
 
     return {
-        "dag": dag,
+        "dag": dag.model_dump(),
         "messages": ["Bypassed decomposition for direct execution."],
     }
