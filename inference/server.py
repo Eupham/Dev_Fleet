@@ -51,12 +51,11 @@ vllm_image = (
     .run_commands(
         [
             f"huggingface-cli download {MODEL_NAME}",
-        ]
+        ],
+        env={"HF_HUB_ENABLE_HF_TRANSFER": "1", "HF_XET_HIGH_PERFORMANCE": "1"},
     )
     .env(
         {
-            "HF_HUB_ENABLE_HF_TRANSFER": "1",
-            "HF_XET_HIGH_PERFORMANCE": "1",
             "VLLM_SERVER_DEV_MODE": "0",
             "TORCHINDUCTOR_COMPILE_THREADS": "1",
             # Required for snapshot survival without NCCL socket crashes

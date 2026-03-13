@@ -56,13 +56,12 @@ reranker_cache_vol = modal.Volume.from_name(
     volumes={"/root/.cache/huggingface": reranker_cache_vol},
     scaledown_window=5 * MINUTES,
     timeout=5 * MINUTES,
-    enable_memory_snapshot=True,
 )
 @modal.concurrent(max_inputs=50)
 class Reranker:
     """Qwen3-Reranker-0.6B cross-encoder for graph-edge scoring."""
 
-    @modal.enter(snap=True)
+    @modal.enter()
     def load_model(self):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer

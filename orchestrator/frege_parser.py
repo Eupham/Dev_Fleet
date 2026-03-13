@@ -9,11 +9,11 @@ Decomposition is performed by the 32B model via Modal-native RPC.
 
 from __future__ import annotations
 
-import json
 import uuid
 from typing import Any
 
-from pydantic import BaseModel, Field
+import networkx as nx
+from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +45,35 @@ class TaskDAG(BaseModel):
 
     user_prompt: str
     tasks: list[AtomicTaskNode]
+
+    @model_validator(mode="after")
+    def validate_dependencies(self) -> "TaskDAG":
+        """Resolve index-based depends_on to UUIDs and assert DAG acyclicity."""
+        import logging
+
+        logger = logging.getLogger("dev_fleet.frege_parser")
+
+        # Build a dual map: integer index strings and real IDs both resolve to the task ID.
+        id_map: dict[str, str] = {str(i): task.id for i, task in enumerate(self.tasks)}
+        id_map.update({task.id: task.id for task in self.tasks})
+
+        G = nx.DiGraph()
+        for task in self.tasks:
+            resolved: list[str] = []
+            for dep in task.depends_on:
+                if dep in id_map:
+                    resolved.append(id_map[dep])
+                else:
+                    logger.warning("Dropping unknown dependency %r from task %s", dep, task.id)
+            task.depends_on = resolved
+            G.add_node(task.id)
+            for dep in resolved:
+                G.add_edge(dep, task.id)
+
+        if not nx.is_directed_acyclic_graph(G):
+            raise ValueError("Task decomposition resulted in a circular dependency.")
+
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -111,18 +140,5 @@ def parse_prompt(
 
     # Populate user_prompt if empty to be safe
     dag.user_prompt = user_prompt
-
-    # Map any index-based depends_on to UUIDs for safety
-    nodes = dag.tasks
-    for i, item in enumerate(nodes):
-        deps = item.depends_on
-        # Assuming if depends_on are indices represented as strings, we fix them:
-        new_deps = []
-        for d in deps:
-            if d.isdigit() and int(d) < len(nodes):
-                new_deps.append(nodes[int(d)].id)
-            else:
-                new_deps.append(d)
-        nodes[i].depends_on = new_deps
 
     return dag
