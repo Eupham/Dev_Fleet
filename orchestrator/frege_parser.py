@@ -48,7 +48,9 @@ class TaskDAG(BaseModel):
 
     @model_validator(mode="after")
     def validate_dependencies(self) -> "TaskDAG":
-        """Resolve index-based depends_on to UUIDs and assert DAG acyclicity."""
+        """Resolve index-based depends_on to UUIDs, assert DAG acyclicity, and
+        reorder the tasks array via topological sort so that every dependency is
+        guaranteed to appear before the task that depends on it."""
         import logging
 
         logger = logging.getLogger("dev_fleet.frege_parser")
@@ -56,6 +58,8 @@ class TaskDAG(BaseModel):
         # Build a dual map: integer index strings and real IDs both resolve to the task ID.
         id_map: dict[str, str] = {str(i): task.id for i, task in enumerate(self.tasks)}
         id_map.update({task.id: task.id for task in self.tasks})
+
+        task_map: dict[str, AtomicTaskNode] = {task.id: task for task in self.tasks}
 
         G = nx.DiGraph()
         for task in self.tasks:
@@ -68,10 +72,15 @@ class TaskDAG(BaseModel):
             task.depends_on = resolved
             G.add_node(task.id)
             for dep in resolved:
-                G.add_edge(dep, task.id)
+                G.add_edge(dep, task.id)  # directed edge: dependency → dependent
 
         if not nx.is_directed_acyclic_graph(G):
             raise ValueError("Task decomposition resulted in a circular dependency.")
+
+        # Reorder tasks so the execution array always satisfies dependency order,
+        # regardless of the order the LLM originally emitted the tasks.
+        sorted_ids = list(nx.topological_sort(G))
+        self.tasks = [task_map[node_id] for node_id in sorted_ids]
 
         return self
 
