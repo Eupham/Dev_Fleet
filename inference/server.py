@@ -119,7 +119,7 @@ def _warmup() -> None:
 
 @app.cls(
     image=vllm_image,
-    gpu="T4",
+    gpu=modal.gpu.A10G(),
     scaledown_window=2,  # Modal minimum (>0 required); snapshots handle cold-start
     timeout=10 * MINUTES,
     retries=0,
@@ -135,12 +135,24 @@ class Inference:
 
     @modal.enter(snap=True)
     def start(self):
-        """Start vLLM, warm up, and snapshot."""
+        """Download model weights and compile kernels for snapshot."""
         import os as _os
         # Blind PyTorch/NCCL to any ghost GPUs visible to cgroups on multi-GPU chassis;
         # IPC handles for non-primary GPUs cannot survive a CRIU physical-node migration.
         _os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
+        # We don't start the vLLM server here anymore because TCPSockets
+        # for distributed backend cannot survive snapshots.
+        from huggingface_hub import snapshot_download
+        print(f"[dev_fleet] Downloading model weights for {MODEL_NAME} into snapshot...")
+        snapshot_download(MODEL_NAME)
+        print("[dev_fleet] Snapshot ready — capturing full GPU memory including weights.")
+
+    @modal.enter(snap=False)
+    def restore(self):
+        """Start the server process after container thaws from snapshot."""
+        import os as _os
+        _os.environ["CUDA_VISIBLE_DEVICES"] = "0"
         cmd = [
             "vllm",
             "serve",
@@ -161,7 +173,7 @@ class Inference:
             "--disable-custom-all-reduce",
             # Snapshot-specific flags
             "--enforce-eager",
-            "--dtype=half",  # T4 supports float16, not bfloat16
+            "--dtype=bfloat16",  # Ampere+ GPUs support bfloat16 natively
             "--max-num-seqs",
             "4",
             "--max-model-len",
@@ -174,12 +186,6 @@ class Inference:
         self.proc = subprocess.Popen(cmd)
         _wait_ready(self.proc)
         _warmup()
-        print("[dev_fleet] Snapshot ready — capturing full GPU memory including weights.")
-
-    @modal.enter(snap=False)
-    def restore(self):
-        """Resume server live after restoring from a GPU snapshot."""
-        _wait_ready(self.proc)
         print("[dev_fleet] Restored from snapshot — server live.")
 
     @modal.method()
