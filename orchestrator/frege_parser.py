@@ -149,22 +149,37 @@ def parse_prompt(
     messages = _build_decomposition_messages(user_prompt, codebase_context=codebase_context)
 
     # We pass the schema directly; the backend uses xgrammar to enforce structured generation.
-    # 1500 tokens accommodates up to ~8 tasks with full descriptions without hitting the
-    # 8192-token model context ceiling even with a long codebase-context input.
+    # We use a higher max_tokens (4096) to prevent EOF errors when parsing complex logic.
     try:
         dag: TaskDAG = chat_completion(
-            messages, model=model, temperature=0.2, max_tokens=1500, schema=TaskDAG
+            messages, model=model, temperature=0.2, max_tokens=4096, schema=TaskDAG
         )
     except Exception as e:
-        # Fallback: treat the entire prompt as a single task so the agent always proceeds.
         import logging
-        logging.getLogger("dev_fleet.frege_parser").warning(
-            "Task decomposition failed (%s). Falling back to single-task DAG.", e
-        )
-        return TaskDAG(
-            user_prompt=user_prompt,
-            tasks=[AtomicTaskNode(description=user_prompt[:500])],
-        )
+        logger = logging.getLogger("dev_fleet.frege_parser")
+
+        # Check if it's an EOF validation error (e.g. from Pydantic JSON decoding)
+        if "EOF" in str(e) or "truncated" in str(e).lower():
+            logger.warning("Caught EOF/Truncated JSON error during decomposition. Retrying...")
+            messages.append({"role": "assistant", "content": "The output was interrupted."})
+            messages.append({"role": "user", "content": "Your previous JSON response was truncated. Please output the complete JSON object."})
+            try:
+                dag: TaskDAG = chat_completion(
+                    messages, model=model, temperature=0.2, max_tokens=4096, schema=TaskDAG
+                )
+            except Exception as e2:
+                logger.warning("Retry task decomposition failed (%s). Falling back to single-task DAG.", e2)
+                return TaskDAG(
+                    user_prompt=user_prompt,
+                    tasks=[AtomicTaskNode(description=user_prompt[:500])],
+                )
+        else:
+            # Fallback: treat the entire prompt as a single task so the agent always proceeds.
+            logger.warning("Task decomposition failed (%s). Falling back to single-task DAG.", e)
+            return TaskDAG(
+                user_prompt=user_prompt,
+                tasks=[AtomicTaskNode(description=user_prompt[:500])],
+            )
 
     # Populate user_prompt if empty to be safe
     dag.user_prompt = user_prompt
