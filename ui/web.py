@@ -11,7 +11,7 @@ web_image = (
         "pydantic>=2.12.5", "networkx>=3.6.1",
         "chainlit>=2.10.0",
         "llama-index-core>=0.14.17", "llama-index-embeddings-huggingface>=0.7.0",
-        "smolagents>=1.24.0", "orjson>=3.11.7",
+        "smolagents>=1.24.0", "orjson>=3.11.7", "pathspec>=0.12.1",
     )
     .add_local_python_source("fleet_app", copy=True)
     .add_local_python_source("orchestrator", copy=True)
@@ -70,6 +70,13 @@ try:
                 async with cl.Step(name=step_name) as step:
                     # Parse out a clean markdown display instead of raw JSON blocks
                     content_lines = []
+
+                    if step_name == "Supervisor" and state_snapshot.get("intent"):
+                        content_lines.append(f"**Intent Classified:** {state_snapshot['intent']}")
+
+                    if step_name == "Retrieve_Codebase" and state_snapshot.get("codebase_context"):
+                        ctx = state_snapshot["codebase_context"]
+                        content_lines.append(f"**Codebase Context:**\n```python\n{ctx}\n```")
 
                     # Show the task DAG cleanly if it's the Decompose step
                     if step_name == "Decompose" and "dag" in state_snapshot and state_snapshot["dag"]:

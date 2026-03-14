@@ -4,6 +4,7 @@ modal>=1.3.5
 # Graph / orchestration
 networkx>=3.6.1
 pydantic>=2.12.5
+pathspec>=0.12.1
 
 # Fast JSON serialisation
 orjson>=3.11.7
