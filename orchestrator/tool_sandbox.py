@@ -115,6 +115,8 @@ class ModalSandboxTool(Tool):
 
             stdout = proc.stdout.read()
             stderr = proc.stderr.read()
+            # Modal ContainerProcess requires wait() before returncode is valid
+            proc.wait()
             exit_code = proc.returncode
         except Exception as exc:
             stdout = ""

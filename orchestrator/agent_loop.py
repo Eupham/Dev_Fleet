@@ -164,7 +164,7 @@ def _append_workspace_entry(
     lang = tool_hint if tool_hint else "text"
     output_snippet = (stdout.strip()[:200] + "...") if len(stdout.strip()) > 200 else stdout.strip()
     if not output_snippet and stderr.strip():
-        output_snippet = f"[stderr] {stderr.strip()[:100]}"
+        output_snippet = f"[stderr] {stderr.strip()[:300]}"
     entry = f"{status} [{lang}] {task_desc[:80]}"
     if output_snippet:
         entry += f"\n    → {output_snippet}"
@@ -235,7 +235,7 @@ def execute_node(state: AgentState) -> dict:
     if tool_hint not in ("python", "bash"):
         memory.episodic.nodes[task.get("id")].update(status="success", response=text[:2000])
         task["status"] = "success"
-        update["sandbox_results"] = [{"stdout": text[:1000], "stderr": "", "exit_code": 0}]
+        update["sandbox_results"] = [{"stdout": text[:1000], "stderr": "", "exit_code": 0, "code": "", "task_description": task.get("description", ""), "tool_hint": tool_hint}]
         update["current_task_idx"] = idx + 1
         update["current_attempt"] = 1
         # Update workspace context with task result
@@ -246,7 +246,7 @@ def execute_node(state: AgentState) -> dict:
         tool = ModalSandboxTool()
         raw_result = tool.forward(code=code_to_run, language=tool_hint)
         result = SandboxResult(stdout=raw_result["stdout"], stderr=raw_result["stderr"], exit_code=raw_result["exit_code"])
-        update["sandbox_results"] = [{"stdout": result.stdout, "stderr": result.stderr, "exit_code": result.exit_code}]
+        update["sandbox_results"] = [{"stdout": result.stdout, "stderr": result.stderr, "exit_code": result.exit_code, "code": code_to_run[:2000], "task_description": task.get("description", ""), "tool_hint": tool_hint}]
         # Update workspace context after every sandbox execution
         update["codebase_context"] = _append_workspace_entry(
             state.get("codebase_context", ""),
@@ -277,21 +277,42 @@ def execute_node(state: AgentState) -> dict:
 
 
 def handle_failure_node(state: AgentState) -> dict:
-    """Handle sandbox failures."""
+    """Handle sandbox failures — extract error context for retry visibility."""
     logger.info("Executing Handle_Failure node...")
     dag = state["dag"]
     idx = state["current_task_idx"]
     task = dag.get("tasks", [])[idx]
     memory = TriGraphMemory.load()
 
+    # Extract the last sandbox error for UI visibility
+    last_stderr = ""
+    last_exit_code = 1
+    sandbox_results = state.get("sandbox_results", [])
+    if sandbox_results:
+        last = sandbox_results[-1]
+        if isinstance(last, dict):
+            last_stderr = last.get("stderr", "")
+            last_exit_code = last.get("exit_code", 1)
+        else:
+            last_stderr = getattr(last, "stderr", "")
+            last_exit_code = getattr(last, "exit_code", 1)
+
     new_attempt = state["current_attempt"] + 1
-    update = {"current_attempt": new_attempt}
+    update: dict = {
+        "current_attempt": new_attempt,
+        "messages": [
+            f"Retrying task (attempt {new_attempt} of {MAX_RETRIES})...\n"
+            f"Stderr: {last_stderr[:500] if last_stderr else '(empty)'}\n"
+            f"Exit code: {last_exit_code}"
+        ],
+    }
 
     if new_attempt > MAX_RETRIES:
         memory.episodic.nodes[task.get("id")]["status"] = "failed"
         task["status"] = "failed"
         update["current_task_idx"] = idx + 1
         update["current_attempt"] = 1
+        logger.warning("Task %s exhausted retries — marking failed. Last error: %s", task.get("id"), last_stderr[:200])
 
     memory.save()
     return update

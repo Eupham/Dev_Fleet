@@ -272,7 +272,14 @@ try:
                             stdout   = latest.get("stdout", "")   if isinstance(latest, dict) else getattr(latest, "stdout", "")
                             stderr   = latest.get("stderr", "")   if isinstance(latest, dict) else getattr(latest, "stderr", "")
                             exit_code = latest.get("exit_code", 0) if isinstance(latest, dict) else getattr(latest, "exit_code", 0)
+                            code     = latest.get("code", "")     if isinstance(latest, dict) else getattr(latest, "code", "")
+                            task_desc = latest.get("task_description", "") if isinstance(latest, dict) else getattr(latest, "task_description", "")
+                            tool_hint = latest.get("tool_hint", "") if isinstance(latest, dict) else getattr(latest, "tool_hint", "")
                             status   = "✅ Success" if exit_code == 0 else "❌ Failed"
+                            if task_desc:
+                                content_lines.append(f"**Task:** {task_desc}")
+                            if code and tool_hint:
+                                content_lines.append(f"**Generated code** (`{tool_hint}`):\n```{tool_hint}\n{code[:1500]}\n```")
                             if stdout:
                                 content_lines.append(f"**{status}:**\n```\n{stdout[:2000]}\n```")
                             elif exit_code == 0:
@@ -287,6 +294,9 @@ try:
                     elif step_name == "Handle_Failure":
                         attempt = state_snapshot.get("current_attempt", 1)
                         content_lines.append(f"**Retrying task** (attempt {attempt} of 2)...")
+                        msgs = node_update.get("messages", [])
+                        if msgs:
+                            content_lines.append(f"\n{msgs[-1]}")
 
                     elif step_name in ("Conversation", "Direct_Execute"):
                         msgs = node_update.get("messages", [])
@@ -334,8 +344,12 @@ try:
                         graph_msg.content = "**Tri-Graph Knowledge State**\n\n*Graph is empty — no nodes yet.*"
                     graph_msg.elements = []
                     await graph_msg.update()
-                except Exception:
-                    pass  # Never let graph rendering break the step loop
+                except Exception as graph_exc:
+                    import logging
+                    logging.getLogger("dev_fleet.ui").warning("Graph render error: %s", graph_exc)
+                    graph_msg.content = f"**Tri-Graph Knowledge State**\n\n*Render error: {type(graph_exc).__name__}: {graph_exc}*"
+                    graph_msg.elements = []
+                    await graph_msg.update()
 
             # Finalize
             if final_graph_html:
