@@ -84,33 +84,6 @@ vllm_cache_vol = modal.Volume.from_name("vllm-cache-vol", create_if_missing=True
 # Snapshot helpers
 # ---------------------------------------------------------------------------
 
-def _flatten_schema(schema: dict) -> dict:
-    """Recursively inline all $ref references so xgrammar can compile the schema
-    natively without falling back to outlines.
-
-    Pydantic v2 emits $defs + $ref for nested models.  xgrammar's JSON-schema
-    compiler does not support $ref resolution, so we resolve them here before
-    the schema is handed to vLLM's response_format.
-    """
-    import copy
-    schema = copy.deepcopy(schema)
-    defs = schema.pop("$defs", {})
-    if not defs:
-        return schema
-
-    def _resolve(obj):
-        if isinstance(obj, dict):
-            if "$ref" in obj and len(obj) == 1:
-                ref_key = obj["$ref"].split("/")[-1]
-                return _resolve(copy.deepcopy(defs[ref_key]))
-            return {k: _resolve(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [_resolve(i) for i in obj]
-        return obj
-
-    return _resolve(schema)
-
-
 def _wait_ready(proc: subprocess.Popen) -> None:
     """Busy-poll until the vLLM server is accepting connections."""
     while True:
@@ -236,7 +209,7 @@ class Inference:
                     "type": "json_schema",
                     "json_schema": {
                         "name": schema.__name__,
-                        "schema": _flatten_schema(schema.model_json_schema()),
+                        "schema": schema.model_json_schema(),
                     }
                 }
             }
