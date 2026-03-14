@@ -108,6 +108,7 @@ def direct_execute_node(state: "AgentState") -> dict:
     """Bypass Frege decomposition and create a single-task DAG directly."""
     import logging
     from orchestrator.frege_parser import AtomicTaskNode, TaskDAG
+    from orchestrator.graph_memory import TriGraphMemory
 
     logger = logging.getLogger("dev_fleet.supervisor")
     logger.info("Direct_Execute node bypassing Frege decomposition.")
@@ -122,6 +123,11 @@ def direct_execute_node(state: "AgentState") -> dict:
         intent_observation="Direct single-step execution — decomposition bypassed.",
         tasks=[single_task],
     )
+
+    # Register the task in episodic memory so execute_node can find it by ID.
+    memory = TriGraphMemory.load()
+    memory.add_episodic_node(single_task.id, single_task.model_dump())
+    memory.save()
 
     return {
         "dag": dag.model_dump(),
