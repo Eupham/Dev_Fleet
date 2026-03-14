@@ -1,9 +1,6 @@
 import modal
 from fleet_app import app
 
-# Create a lightweight CPU image for the web UI. We explicitly add the fleet_app, orchestrator, inference, and ui
-# modules to ensure we can import and invoke the orchestrator function AND that `chainlit run ui/web.py`
-# can locate the file inside the container.
 web_image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install(
@@ -25,155 +22,317 @@ try:
     import chainlit as cl
     import orjson
 
-    @cl.on_chat_start
-    async def on_chat_start():
-        await cl.Message(content="Welcome to Dev Fleet Orchestrator. Please enter your prompt to execute the agent. The Tri-Graph state will update as nodes execute.").send()
+    # ---------------------------------------------------------------------------
+    # Mermaid shape helpers — different shapes per node label type
+    # ---------------------------------------------------------------------------
+
+    # Maps label → (open_bracket, close_bracket) for Mermaid node syntax
+    # nodeId[open_bracket "text" close_bracket]  (the brackets are literal chars)
+    _LABEL_SHAPE: dict[str, tuple[str, str]] = {
+        # Episodic / task
+        "Task":       ("[",  "]"),   # rectangle
+        # Semantic
+        "Concept":    ("(",  ")"),   # rounded rectangle
+        "Entity":     ("(",  ")"),
+        "Fact":       ("[",  "]"),
+        "Principle":  ("{",  "}"),   # rhombus
+        "Pattern":    ("[/", "/]"),  # parallelogram
+        "Definition": ("[",  "]"),
+        # Procedural
+        "Tool":       ("([", "])"),  # stadium
+        "Function":   ("[/", "/]"),  # parallelogram
+        "Step":       ("[",  "]"),
+        "Rule":       ("{",  "}"),   # rhombus
+        "Workflow":   ("([", "])"),  # stadium
+        "Template":   ("[",  "]"),
+    }
+    _DEFAULT_SHAPE = ("[", "]")
+
+    def _mermaid_node(node_id: str, label: str, text: str) -> str:
+        """Return a single Mermaid node declaration line."""
+        o, c = _LABEL_SHAPE.get(label, _DEFAULT_SHAPE)
+        safe_text = text.replace('"', "'")
+        return f'        {node_id}{o}"{safe_text}"{c}'
+
+    def _safe_label(text: str, max_len: int = 60) -> str:
+        text = str(text)
+        return text if len(text) <= max_len else text[:max_len - 3] + "..."
+
+    def _nid(prefix: str, raw: str) -> str:
+        return f"{prefix}_{str(raw).replace('-', '_').replace('.', '_')}"
+
+    # ---------------------------------------------------------------------------
+    # Task list renderer
+    # ---------------------------------------------------------------------------
+
+    _STATUS_ICON = {
+        "success": "✅",
+        "failed":  "❌",
+        "running": "🔄",
+        "pending": "⬜",
+    }
+
+    def _render_task_list(dag: dict | None, current_idx: int = 0) -> str:
+        if not dag:
+            return "*No tasks yet.*"
+        tasks = dag.get("tasks", []) if isinstance(dag, dict) else getattr(dag, "tasks", [])
+        if not tasks:
+            return "*No tasks yet.*"
+        lines = ["**Task List**\n"]
+        for i, t in enumerate(tasks):
+            desc = t.get("description", "") if isinstance(t, dict) else getattr(t, "description", "")
+            status = t.get("status", "pending") if isinstance(t, dict) else getattr(t, "status", "pending")
+            hint = t.get("tool_hint", "") if isinstance(t, dict) else getattr(t, "tool_hint", "")
+            icon = _STATUS_ICON.get(status, "⬜")
+            hint_tag = f" `[{hint}]`" if hint else ""
+            lines.append(f"{i + 1}. {icon} {desc}{hint_tag}")
+        return "\n".join(lines)
+
+    # ---------------------------------------------------------------------------
+    # Tri-Graph Mermaid renderer
+    # ---------------------------------------------------------------------------
+
+    def _render_trigraph(graphs_dict: dict, nx) -> str:
+        from orchestrator.graph_memory import TriGraphMemory
+
+        mem = TriGraphMemory()
+        mem.episodic   = nx.node_link_graph(graphs_dict["episodic"])
+        mem.semantic   = nx.node_link_graph(graphs_dict["semantic"])
+        mem.procedural = nx.node_link_graph(graphs_dict["procedural"])
+
+        has_ep   = mem.episodic.number_of_nodes() > 0
+        has_sem  = mem.semantic.number_of_nodes() > 0
+        has_proc = mem.procedural.number_of_nodes() > 0
+
+        if not (has_ep or has_sem or has_proc):
+            return ""
+
+        lines = ["graph TD"]
+
+        if has_ep:
+            lines.append('    subgraph EPISODIC["Task Execution"]')
+            for node, data in mem.episodic.nodes(data=True):
+                nid   = _nid("ep", node)
+                label = data.get("label", "Task")
+                text  = _safe_label(data.get("content") or data.get("description") or str(node))
+                lines.append(_mermaid_node(nid, label, text))
+                status = data.get("status", "pending")
+                if status == "success":
+                    lines.append(f"        style {nid} fill:#2ecc71,stroke:#27ae60,stroke-width:2px,color:#fff")
+                elif status == "failed":
+                    lines.append(f"        style {nid} fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff")
+                elif status == "running":
+                    lines.append(f"        style {nid} fill:#f39c12,stroke:#d35400,stroke-width:2px,color:#fff")
+                else:
+                    lines.append(f"        style {nid} fill:#95a5a6,stroke:#7f8c8d,stroke-width:1px,color:#fff")
+            lines.append("    end")
+
+        if has_sem:
+            lines.append('    subgraph SEMANTIC["Semantic Knowledge"]')
+            for node, data in mem.semantic.nodes(data=True):
+                nid   = _nid("sem", node)
+                label = data.get("label", "Concept")
+                text  = _safe_label(data.get("content") or data.get("description") or data.get("name") or str(node))
+                lines.append(_mermaid_node(nid, label, text))
+                lines.append(f"        style {nid} fill:#3498db,stroke:#2980b9,stroke-width:1px,color:#fff")
+            lines.append("    end")
+
+        if has_proc:
+            lines.append('    subgraph PROCEDURAL["Procedural Rules"]')
+            for node, data in mem.procedural.nodes(data=True):
+                nid   = _nid("proc", node)
+                label = data.get("label", "Tool")
+                text  = _safe_label(data.get("content") or data.get("description") or data.get("rule") or str(node))
+                lines.append(_mermaid_node(nid, label, text))
+                lines.append(f"        style {nid} fill:#27ae60,stroke:#229954,stroke-width:1px,color:#fff")
+            lines.append("    end")
+
+        for u, v in mem.episodic.edges():
+            lines.append(f"    {_nid('ep', u)} --> {_nid('ep', v)}")
+        for u, v in mem.semantic.edges():
+            lines.append(f"    {_nid('sem', u)} --> {_nid('sem', v)}")
+        for u, v in mem.procedural.edges():
+            lines.append(f"    {_nid('proc', u)} --> {_nid('proc', v)}")
+
+        return "\n".join(lines)
+
+    # ---------------------------------------------------------------------------
+    # Message handler
+    # ---------------------------------------------------------------------------
 
     @cl.on_message
     async def main(message: cl.Message):
-        from orchestrator.core_app import run_agent_stream
-        from orchestrator.graph_memory import TriGraphMemory, generate_interactive_graph_html
         import networkx as nx
+        from orchestrator.core_app import run_agent_stream
 
         prompt = message.content
-
-        # We will use a main message to attach the dynamically updating graph
-        graph_msg = await cl.Message(content="*Initializing Agent...*").send()
-
-        # Need to use modal.Function.from_name inside the chainlit subprocess
-        # since it runs separately from the main app's python context
         run_agent_stream_func = modal.Function.from_name("dev_fleet", "run_agent_stream")
 
-        # Load elements conditionally
-        loading_elements = [
-            cl.Text(name="Status", content="Attempting to start Dev Fleet orchestration engine. Please wait. First boot might take up to 2 minutes.", display="inline")
-        ]
-        graph_msg.elements = loading_elements
-        await graph_msg.update()
+        # Two separate persistent messages:
+        #   task_msg  — the task list (lazy; created once DAG is available)
+        #   graph_msg — the Tri-Graph knowledge visualization
+        task_msg:  cl.Message | None = None
+        graph_msg: cl.Message = await cl.Message(
+            content="**Tri-Graph Knowledge State**\n\n*Waiting for first node...*"
+        ).send()
 
-        # Track the latest Mermaid graph so we can show it after the loop ends
         final_graph_markdown = ""
 
-        # Iterate over the generator from Modal
         _gen = run_agent_stream_func.remote_gen.aio(prompt)
         try:
             async for update in _gen:
-                step_name = update["step"]
+                step_name      = update["step"]
                 state_snapshot = update["state_snapshot"]
-                graphs_dict = update["graphs"]
+                graphs_dict    = update["graphs"]
+                node_update    = update.get("node_update", {})
 
                 if step_name == "keep-alive":
-                    # Just ignore keep-alive to keep connection open
                     continue
 
-                # Display the execution step
+                # --- Step panel ---
                 async with cl.Step(name=step_name) as step:
-                    # Parse out a clean markdown display instead of raw JSON blocks
                     content_lines = []
 
-                    if step_name == "Supervisor" and state_snapshot.get("intent"):
-                        content_lines.append(f"**Intent Classified:** {state_snapshot['intent']}")
+                    if step_name == "Supervisor":
+                        intent = node_update.get("intent") or state_snapshot.get("intent", "unknown")
+                        intent_desc = {
+                            "DECOMPOSE":      "multi-step task — routing to full decomposition pipeline",
+                            "DIRECT_EXECUTE": "single-step task — bypassing decomposition",
+                            "CONVERSATION":   "conversational query — routing to direct response",
+                        }.get(intent, intent)
+                        content_lines.append(f"**Classified:** {intent} — {intent_desc}")
 
-                    if step_name == "Retrieve_Codebase" and state_snapshot.get("codebase_context"):
-                        ctx = state_snapshot["codebase_context"]
-                        content_lines.append(f"**Codebase Context:**\n```python\n{ctx}\n```")
-
-                    # Show the task DAG cleanly if it's the Decompose step
-                    if step_name == "Decompose" and "dag" in state_snapshot and state_snapshot["dag"]:
-                        content_lines.append("**Tasks Decomposed:**")
-                        tasks = state_snapshot["dag"].get("tasks", []) if isinstance(state_snapshot["dag"], dict) else getattr(state_snapshot["dag"], "tasks", [])
-                        for t in tasks:
-                            desc = t.get("description", "") if isinstance(t, dict) else getattr(t, "description", "")
-                            content_lines.append(f"- {desc}")
-
-                    # Show the latest messages
-                    if "messages" in state_snapshot and state_snapshot["messages"]:
-                        content_lines.append(f"**Agent:** {state_snapshot['messages'][-1]}")
-
-                    # Show sandbox results if any
-                    if "sandbox_results" in state_snapshot and state_snapshot["sandbox_results"]:
-                        latest_sandbox = state_snapshot["sandbox_results"][-1]
-                        # Handle both dict (JSON-serialised) and dataclass object (in-process)
-                        if isinstance(latest_sandbox, dict):
-                            stdout = latest_sandbox.get("stdout", "")
-                            exit_code = latest_sandbox.get("exit_code", 0)
+                    elif step_name == "Retrieve_Codebase":
+                        ctx = node_update.get("codebase_context") or state_snapshot.get("codebase_context", "")
+                        if ctx:
+                            content_lines.append(f"**Relevant codebase context:**\n```\n{ctx}\n```")
                         else:
-                            stdout = getattr(latest_sandbox, "stdout", "")
-                            exit_code = getattr(latest_sandbox, "exit_code", 0)
-                        status_icon = "✅ Success" if exit_code == 0 else "❌ Failed"
-                        content_lines.append(f"\n**Tool Execution ({status_icon}):**\n```\n{stdout[:1000]}\n```")
+                            content_lines.append("**Codebase scan:** No relevant files found — proceeding with empty context.")
 
-                    step.output = "\n".join(content_lines) if content_lines else orjson.dumps(state_snapshot, option=orjson.OPT_INDENT_2).decode("utf-8")
+                    elif step_name == "Decompose":
+                        dag = node_update.get("dag") or state_snapshot.get("dag")
+                        if dag:
+                            tasks = dag.get("tasks", []) if isinstance(dag, dict) else getattr(dag, "tasks", [])
+                            content_lines.append(f"**{len(tasks)} tasks decomposed:**")
+                            for i, t in enumerate(tasks, 1):
+                                desc = t.get("description", "") if isinstance(t, dict) else getattr(t, "description", "")
+                                hint = t.get("tool_hint", "") if isinstance(t, dict) else getattr(t, "tool_hint", "")
+                                deps = t.get("depends_on", []) if isinstance(t, dict) else getattr(t, "depends_on", [])
+                                hint_tag = f" `[{hint}]`" if hint else ""
+                                dep_tag  = f" *(depends on {len(deps)} task{'s' if len(deps) != 1 else ''})*" if deps else ""
+                                content_lines.append(f"{i}. {desc}{hint_tag}{dep_tag}")
 
-                # Render the episodic Tri-Graph as a native Mermaid diagram inside Chainlit
-                mem = TriGraphMemory()
-                mem.episodic = nx.node_link_graph(graphs_dict["episodic"])
+                    elif step_name == "Rerank_and_Retrieve":
+                        msgs = node_update.get("messages", [])
+                        dag  = state_snapshot.get("dag")
+                        task_count = len(dag.get("tasks", [])) if dag and isinstance(dag, dict) else 0
+                        if msgs:
+                            content_lines.append(f"**{msgs[-1]}**")
+                        if task_count:
+                            content_lines.append(
+                                f"Scored {task_count} task{'s' if task_count != 1 else ''} "
+                                "against semantic and procedural graphs."
+                            )
 
-                mermaid_lines = ["graph TD"]
-                for node, data in mem.episodic.nodes(data=True):
-                    label = str(data.get("description", node)).replace('"', "'")
-                    if len(label) > 30:
-                        label = label[:27] + "..."
-                    status = data.get("status", "pending")
-                    mermaid_lines.append(f'    {node}["{label}"]')
-                    if status == "success":
-                        mermaid_lines.append(f"    style {node} fill:#2ecc71,stroke:#27ae60,stroke-width:2px,color:#fff")
-                    elif status == "failed":
-                        mermaid_lines.append(f"    style {node} fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff")
-                    elif status == "running":
-                        mermaid_lines.append(f"    style {node} fill:#f39c12,stroke:#d35400,stroke-width:2px,color:#fff")
-                for u, v, _ in mem.episodic.edges(data=True):
-                    mermaid_lines.append(f"    {u} --> {v}")
+                    elif step_name == "Execute":
+                        results = node_update.get("sandbox_results", [])
+                        if results:
+                            latest   = results[-1]
+                            stdout   = latest.get("stdout", "")   if isinstance(latest, dict) else getattr(latest, "stdout", "")
+                            stderr   = latest.get("stderr", "")   if isinstance(latest, dict) else getattr(latest, "stderr", "")
+                            exit_code = latest.get("exit_code", 0) if isinstance(latest, dict) else getattr(latest, "exit_code", 0)
+                            status   = "✅ Success" if exit_code == 0 else "❌ Failed"
+                            if stdout:
+                                content_lines.append(f"**{status}:**\n```\n{stdout[:2000]}\n```")
+                            elif exit_code == 0:
+                                content_lines.append(f"**{status}** (no output)")
+                            if stderr and exit_code != 0:
+                                content_lines.append(f"**Stderr:**\n```\n{stderr[:500]}\n```")
+                        else:
+                            msgs = node_update.get("messages", [])
+                            if msgs:
+                                content_lines.append(msgs[-1])
 
-                graph_markdown = "\n".join(mermaid_lines)
-                final_graph_markdown = graph_markdown  # persist latest state for finalize
+                    elif step_name == "Handle_Failure":
+                        attempt = state_snapshot.get("current_attempt", 1)
+                        content_lines.append(f"**Retrying task** (attempt {attempt} of 2)...")
 
-                # Render Mermaid diagram as a fenced code block (Chainlit renders it natively)
-                graph_msg.content = f"*Executing Node: {step_name}...*\n\n```mermaid\n{graph_markdown}\n```"
+                    elif step_name in ("Conversation", "Direct_Execute"):
+                        msgs = node_update.get("messages", [])
+                        if msgs:
+                            content_lines.append(msgs[-1])
+
+                    step.output = "\n".join(content_lines) if content_lines else f"*{step_name} completed*"
+
+                # --- Task list (separate persistent message, created lazily) ---
+                current_dag = (
+                    node_update.get("dag")
+                    or state_snapshot.get("dag")
+                )
+                if current_dag:
+                    task_list_md = _render_task_list(
+                        current_dag,
+                        state_snapshot.get("current_task_idx", 0),
+                    )
+                    if task_msg is None:
+                        task_msg = await cl.Message(content=task_list_md).send()
+                    else:
+                        task_msg.content = task_list_md
+                        await task_msg.update()
+
+                # --- Tri-Graph visualization (separate persistent message) ---
+                try:
+                    graph_markdown = _render_trigraph(graphs_dict, nx)
+                    if graph_markdown:
+                        final_graph_markdown = graph_markdown
+                        graph_msg.content = (
+                            f"**Tri-Graph Knowledge State**\n\n"
+                            f"```mermaid\n{graph_markdown}\n```"
+                        )
+                    else:
+                        graph_msg.content = "**Tri-Graph Knowledge State**\n\n*Graph is empty — no nodes yet.*"
+                    graph_msg.elements = []
+                    await graph_msg.update()
+                except Exception:
+                    pass  # Never let graph rendering break the step loop
+
+            # Finalize
+            if final_graph_markdown:
+                graph_msg.content = (
+                    f"**Tri-Graph Knowledge State — Final**\n\n"
+                    f"```mermaid\n{final_graph_markdown}\n```"
+                )
                 graph_msg.elements = []
                 await graph_msg.update()
 
-            # Finalize — preserve the last rendered graph
-            graph_msg.content = f"**Execution Complete. Final Graph State:**\n\n```mermaid\n{final_graph_markdown}\n```" if final_graph_markdown else "**Execution Complete.**"
-            graph_msg.elements = []
-            await graph_msg.update()
-            await cl.Message(content="Task completed successfully.").send()
-
         except Exception as e:
-            # Client disconnected or stream interrupted — update the graph message with
-            # whatever was rendered so far rather than leaving the UI in a loading state.
-            graph_msg.content = f"**Stream ended: {type(e).__name__}**"
+            graph_msg.content = f"**Error: {type(e).__name__}: {e}**"
             if final_graph_markdown:
                 graph_msg.content += f"\n\n```mermaid\n{final_graph_markdown}\n```"
             graph_msg.elements = []
             await graph_msg.update()
         finally:
-            # Always close the Modal generator so GeneratorExit is not silently ignored
             await _gen.aclose()
 
 except ImportError:
-    # This prevents CI pipelines and local modal deploys from failing when chainlit is not installed globally.
-    # The code will still correctly execute when `chainlit run` is called from inside the Modal container where it is installed.
     pass
 
 
 graph_state_vol = modal.Volume.from_name("dev_fleet-graph-state", create_if_missing=True)
-workspace_vol = modal.Volume.from_name("dev_fleet-workspace", create_if_missing=True)
+workspace_vol   = modal.Volume.from_name("dev_fleet-workspace",    create_if_missing=True)
 
 
 @app.function(
     image=web_image,
     volumes={
-        "/state": graph_state_vol,
+        "/state":     graph_state_vol,
         "/workspace": workspace_vol,
     },
     min_containers=1,
-    timeout=3600,  # allow 1-hour WebSocket sessions (Modal default is 300s)
+    timeout=3600,
 )
 @modal.concurrent(max_inputs=100)
 @modal.web_server(port=8000)
 def ui():
     import subprocess
-    # Run the chainlit server via subprocess.
-    # Modal web_server expects a process to bind to the specified port to natively support WebSockets.
     subprocess.Popen(["chainlit", "run", "ui/web.py", "--host", "0.0.0.0", "--port", "8000", "--headless"])
