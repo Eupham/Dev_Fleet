@@ -44,7 +44,6 @@ vllm_image = (
     .add_local_python_source("orchestrator", copy=True)
     .uv_pip_install(
         "vllm==0.17.1",
-        "huggingface-hub==1.7.1",
         "hf_transfer",
     )
     .run_commands(
