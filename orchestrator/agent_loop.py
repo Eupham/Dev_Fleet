@@ -86,50 +86,91 @@ def decompose_node(state: AgentState) -> dict:
 def rerank_and_retrieve_node(state: AgentState) -> dict:
     """Score task edges against semantic/procedural graphs via a Retrieve-then-Rerank pipeline.
 
-    Stage 1 (Bi-encoder ANN): Uses the PropertyGraphIndex retriever with the fast Qwen3
-    embedding model to narrow the full graph vertex set down to a top-k neighbourhood.
-    Stage 2 (Cross-encoder): Runs Qwen3-Reranker only over the retrieved neighbourhood,
-    reducing complexity from O(V×T) to O(k×T) where k << V.
+    Wrapped in a top-level try/except: if the embedder cold-starts, times out,
+    or is otherwise unavailable, this node degrades gracefully and the graph
+    continues to Execute rather than silently ending the LangGraph stream.
     """
     logger.info("Executing Rerank_and_Retrieve node...")
-    memory = TriGraphMemory.load()
-    dag = state["dag"]
+    try:
+        memory = TriGraphMemory.load()
+        dag = state["dag"]
 
-    update = {}
-    if dag:
-        for task in dag.get("tasks", []):
-            # Stage 1 — Bi-encoder: retrieve top-15 semantically similar nodes
-            retriever = memory.property_graph.as_retriever(similarity_top_k=15)
-            retrieved_nodes = retriever.retrieve(task.get("description", ""))
+        # Skip retrieval if the semantic/procedural graphs are empty.
+        # Calling the embedder against an empty index wastes an RPC round-trip
+        # and can cause the graph to hang on cold-starts.
+        pg_has_nodes = (
+            memory.semantic.number_of_nodes() > 0
+            or memory.procedural.number_of_nodes() > 0
+        )
 
-            candidates = []
-            for node in retrieved_nodes:
-                node_id = node.metadata.get("node_id")
-                graph_type = node.metadata.get("graph_type")
-                if node_id:
-                    candidates.append({
-                        "id": node_id,
-                        "graph": graph_type or "unknown",
-                        "description": node.text,
-                    })
+        if dag and pg_has_nodes:
+            for task in dag.get("tasks", []):
+                try:
+                    # Stage 1 — Bi-encoder: retrieve top-15 semantically similar nodes
+                    retriever = memory.property_graph.as_retriever(similarity_top_k=15)
+                    retrieved_nodes = retriever.retrieve(task.get("description", ""))
+                except Exception as retrieval_exc:
+                    logger.warning("Retrieval failed for task %s (%s) — skipping.", task.get("id"), retrieval_exc)
+                    continue
 
-            # Stage 2 — Cross-encoder: score only the retrieved neighbourhood
-            if candidates:
-                edges = rerank_candidates(task.get("id"), task.get("description", ""), candidates)
-                for edge in edges:
-                    graph_type = next(
-                        (c["graph"] for c in candidates if c["id"] == edge.candidate_id),
-                        "unknown",
-                    )
-                    memory.add_episodic_edge(
-                        task.get("id"), edge.candidate_id,
-                        {"graph": graph_type, "score": edge.score},
-                    )
+                candidates = []
+                for node in retrieved_nodes:
+                    node_id = node.metadata.get("node_id")
+                    graph_type = node.metadata.get("graph_type")
+                    if node_id:
+                        candidates.append({
+                            "id": node_id,
+                            "graph": graph_type or "unknown",
+                            "description": node.text,
+                        })
 
-        update["messages"] = ["Reranked and linked episodic tasks to semantic and procedural knowledge."]
+                # Stage 2 — Cross-encoder: score only the retrieved neighbourhood
+                if candidates:
+                    try:
+                        edges = rerank_candidates(task.get("id"), task.get("description", ""), candidates)
+                        for edge in edges:
+                            graph_type = next(
+                                (c["graph"] for c in candidates if c["id"] == edge.candidate_id),
+                                "unknown",
+                            )
+                            memory.add_episodic_edge(
+                                task.get("id"), edge.candidate_id,
+                                {"graph": graph_type, "score": edge.score},
+                            )
+                    except Exception as rerank_exc:
+                        logger.warning("Reranking failed for task %s (%s) — skipping.", task.get("id"), rerank_exc)
 
-    memory.save()
-    return update
+            memory.save()
+            return {"messages": ["Reranked and linked episodic tasks to semantic and procedural knowledge."]}
+
+        # Empty graphs — skip linking, proceed immediately to Execute
+        return {"messages": ["Knowledge graphs empty — skipping linking, proceeding to execution."]}
+
+    except Exception as exc:
+        logger.warning("Rerank_and_Retrieve failed (%s) — skipping knowledge linking.", exc)
+        return {"messages": [f"Knowledge linking skipped ({type(exc).__name__}) — proceeding to execution."]}
+
+
+def _append_workspace_entry(
+    current_ctx: str,
+    task_desc: str,
+    tool_hint: str,
+    stdout: str,
+    stderr: str,
+    exit_code: int,
+) -> str:
+    """Append a one-line workspace summary entry to the running codebase_context."""
+    status = "✓" if exit_code == 0 else "✗"
+    lang = tool_hint if tool_hint else "text"
+    output_snippet = (stdout.strip()[:200] + "...") if len(stdout.strip()) > 200 else stdout.strip()
+    if not output_snippet and stderr.strip():
+        output_snippet = f"[stderr] {stderr.strip()[:100]}"
+    entry = f"{status} [{lang}] {task_desc[:80]}"
+    if output_snippet:
+        entry += f"\n    → {output_snippet}"
+    lines = [l for l in current_ctx.split("\n") if l.strip()]
+    lines.append(entry)
+    return "\n".join(lines)
 
 
 def execute_node(state: AgentState) -> dict:
@@ -161,16 +202,24 @@ def execute_node(state: AgentState) -> dict:
 
     logger.info("Executing Task: %s (attempt %d)", task.get("id"), state["current_attempt"])
     memory.episodic.nodes[task.get("id")]["status"] = "running"
-    graph_context = memory.build_context(task.get("id"))
-    # Append sandbox capability hint so the LLM knows it can read files via shell
+
+    # build_context calls the embedder — wrap so a cold-start failure doesn't crash the node
+    try:
+        graph_context = memory.build_context(task.get("id"))
+    except Exception as ctx_exc:
+        logger.warning("build_context failed for %s (%s) — using empty context.", task.get("id"), ctx_exc)
+        graph_context = "(no context)"
+
+    tool_hint = task.get("tool_hint", "")
     context = (
         graph_context
         + "\n\n[EXECUTION ENVIRONMENT] You are running inside an isolated Modal Sandbox. "
-        "You do NOT have the file contents yet. Use bash (`cat`, `grep`, `find`) or Python "
-        "(`open()`, `pathlib`) to read files and explore the repository before making changes."
+        "Files persist to /workspace between tasks. "
+        "Write all output files to /workspace/. "
+        "Use bash (`cat`, `grep`, `find`, `ls /workspace`) or Python "
+        "(`open()`, `pathlib`) to read and explore files already in /workspace."
     )
 
-    tool_hint = task.get("tool_hint", "")
     temp = 0.3 if tool_hint in ("python", "bash") else 0.7
     text = generate(context, task.get("description", ""), temperature=temp)
 
@@ -187,18 +236,29 @@ def execute_node(state: AgentState) -> dict:
         memory.episodic.nodes[task.get("id")].update(status="success", response=text[:2000])
         task["status"] = "success"
         update["sandbox_results"] = [{"stdout": text[:1000], "stderr": "", "exit_code": 0}]
-        # Proceed to next task upon success
         update["current_task_idx"] = idx + 1
         update["current_attempt"] = 1
+        # Update workspace context with task result
+        update["codebase_context"] = _append_workspace_entry(
+            state.get("codebase_context", ""), task.get("description", ""), tool_hint, text[:300], "", 0
+        )
     else:
         tool = ModalSandboxTool()
         raw_result = tool.forward(code=code_to_run, language=tool_hint)
         result = SandboxResult(stdout=raw_result["stdout"], stderr=raw_result["stderr"], exit_code=raw_result["exit_code"])
         update["sandbox_results"] = [{"stdout": result.stdout, "stderr": result.stderr, "exit_code": result.exit_code}]
+        # Update workspace context after every sandbox execution
+        update["codebase_context"] = _append_workspace_entry(
+            state.get("codebase_context", ""),
+            task.get("description", ""),
+            tool_hint,
+            result.stdout,
+            result.stderr,
+            result.exit_code,
+        )
         if result.success:
             memory.episodic.nodes[task.get("id")].update(status="success", output=result.stdout[:2000])
             task["status"] = "success"
-            # Proceed to next task upon success
             update["current_task_idx"] = idx + 1
             update["current_attempt"] = 1
         else:

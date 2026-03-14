@@ -78,9 +78,19 @@ class ModalSandboxTool(Tool):
         """Run *code* inside an ephemeral Modal Sandbox."""
         import modal  # lazy import — only needed at runtime on Modal
 
-        # Add basic dependencies to sandbox image
-        _sandbox_image = modal.Image.debian_slim(python_version="3.12").pip_install(
-            "pydantic>=2.5",
+        # Sandbox image — stdlib + common task packages + network-capable tools
+        _sandbox_image = (
+            modal.Image.debian_slim(python_version="3.12")
+            .apt_install("curl", "wget", "git")
+            .pip_install(
+                "pydantic>=2.5",
+                "requests>=2.31",
+                "httpx>=0.27",
+                "beautifulsoup4>=4.12",
+                "pygame-ce>=2.4",
+                "matplotlib>=3.8",
+                "numpy>=1.26",
+            )
         )
 
         workspace_vol = modal.Volume.from_name(
@@ -94,6 +104,7 @@ class ModalSandboxTool(Tool):
             image=_sandbox_image,
             timeout=timeout,
             volumes={"/workspace": workspace_vol},
+            network_access=True,
             **({"environment_variables": env} if env else {}),
         )
 
