@@ -369,27 +369,38 @@ class TriGraphMemory:
             parts.append(f"[Episodic] {episodic_node_id}: {json.dumps(attrs, default=str)}")
 
             # Use LlamaIndex property graph retriever to fetch related semantic/procedural
-            if self.property_graph:
+            if self.property_graph and (
+                self.semantic.number_of_nodes() > 0 or self.procedural.number_of_nodes() > 0
+            ):
                 query = str(attrs.get("description", ""))
+                try:
+                    retriever = self.property_graph.as_retriever(similarity_top_k=5)
+                    retrieved_nodes = retriever.retrieve(query)
+                except Exception as exc:
+                    import logging
+                    logging.getLogger("dev_fleet.graph_memory").warning(
+                        "PropertyGraph retrieval failed for %s (%s) — skipping.", episodic_node_id, exc
+                    )
+                    retrieved_nodes = []
 
-                retriever = self.property_graph.as_retriever(similarity_top_k=5)
-                retrieved_nodes = retriever.retrieve(query)
+                if retrieved_nodes:
+                    from orchestrator.rerank_engine import rerank_candidates
+                    candidates = []
+                    for node in retrieved_nodes:
+                        node_id = node.metadata.get("node_id", "unknown")
+                        candidates.append({"id": node_id, "description": node.text})
 
-                # Filter using Qwen3-Reranker cross-encoder as a Node Postprocessor logic
-                from orchestrator.rerank_engine import rerank_candidates
-                candidates = []
-                for node in retrieved_nodes:
-                    node_id = node.metadata.get("node_id", "unknown")
-                    candidates.append({"id": node_id, "description": node.text})
+                    try:
+                        edges = rerank_candidates(episodic_node_id, query, candidates)
+                        valid_ids = {e.candidate_id for e in edges}
+                    except Exception:
+                        valid_ids = {c["id"] for c in candidates}
 
-                edges = rerank_candidates(episodic_node_id, query, candidates)
-                valid_ids = {e.candidate_id for e in edges}
-
-                for node in retrieved_nodes:
-                    node_id = node.metadata.get("node_id", "unknown")
-                    graph_type = node.metadata.get("graph_type", "unknown")
-                    if node_id in valid_ids:
-                        parts.append(f"[{graph_type.capitalize()}] {node_id}: {node.text}")
+                    for node in retrieved_nodes:
+                        node_id = node.metadata.get("node_id", "unknown")
+                        graph_type = node.metadata.get("graph_type", "unknown")
+                        if node_id in valid_ids:
+                            parts.append(f"[{graph_type.capitalize()}] {node_id}: {node.text}")
 
             # Fallback for old manual networkx edges in case of test fixtures or incomplete retrieval
             for _, target, edge_data in self.episodic.out_edges(episodic_node_id, data=True):

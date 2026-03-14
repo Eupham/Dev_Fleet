@@ -93,31 +93,75 @@ class TaskDAG(BaseModel):
 # Decomposition prompt template
 # ---------------------------------------------------------------------------
 
-DECOMPOSITION_SYSTEM = """You are a task decomposition engine operating inside an isolated sandbox.
+# Context-aware system prompts — chosen based on codebase presence and task type.
 
-First, write an `intent_observation` that captures the user's core goal in one or two sentences.
+DECOMPOSITION_SYSTEM_CREATE = """You are a software task planner. The sandbox workspace (/workspace) is EMPTY.
 
-Then generate the atomic sub-tasks needed to fulfil that goal. Use the Codebase Mini-Map below as your guide — it lists relevant file paths and a hint about each file's contents, but you do NOT have the actual file contents yet. Your first sub-tasks must therefore use bash (`cat`, `grep`, `find`) or Python (`open()`, `pathlib`) to read and explore those files before attempting any modifications. Generate only as many tasks as the complexity warrants."""
+Rules:
+1. Do NOT create tasks that read or explore files that don't exist yet.
+2. WRITE code first, then RUN it. Never read before writing when creating from scratch.
+3. tool_hint: use "python" to run Python code, "bash" to run shell commands, "" for planning only.
+4. Every task must be directly executable — no placeholders or "verify" steps.
+5. Write all output files to /workspace/.
+6. Aim for 3-5 focused tasks. Do not over-decompose.
+
+For "Create a pong game in Python and play against yourself":
+  task 1 [bash]: Write /workspace/pong.py — self-contained game using Python curses or turtle. Include a simple AI paddle.
+  task 2 [python]: Run pong.py, capture and print the output or score.
+
+First write intent_observation (one sentence), then list the tasks."""
+
+DECOMPOSITION_SYSTEM_MODIFY = """You are a software task planner. The Codebase Mini-Map lists files already in /workspace.
+
+Rules:
+1. Read relevant files first (bash cat/grep or Python open) before modifying them.
+2. tool_hint: "python", "bash", or "".
+3. Write modified files back to /workspace/.
+4. Aim for 3-6 focused tasks.
+
+First write intent_observation, then list the tasks."""
+
+DECOMPOSITION_SYSTEM_RESEARCH = """You are a software task planner. The sandbox has internet access.
+
+Rules:
+1. Use bash (curl/wget) or Python (requests/httpx) to fetch data from the web.
+2. Write output and any created tools to /workspace/.
+3. tool_hint: "python", "bash", or "".
+4. Aim for 3-6 focused tasks.
+
+First write intent_observation, then list the tasks."""
 
 
 def _build_decomposition_messages(
     user_prompt: str,
     codebase_context: str = "",
 ) -> list[dict[str, str]]:
+    prompt_lower = user_prompt.lower()
+    is_research = any(w in prompt_lower for w in (
+        "research", "search online", "look up", "find online", "web", "internet",
+        "download", "fetch", "browse", "http",
+    ))
+
+    if is_research:
+        system = DECOMPOSITION_SYSTEM_RESEARCH
+    elif codebase_context:
+        system = DECOMPOSITION_SYSTEM_MODIFY
+    else:
+        system = DECOMPOSITION_SYSTEM_CREATE
+
     context_block = (
-        f"Codebase Mini-Map (relevant files — contents not yet loaded):\n{codebase_context}\n\n"
+        f"Codebase Mini-Map (files already in /workspace):\n{codebase_context}\n\n"
         if codebase_context
         else ""
     )
-    explicit_user_message = (
-        "The following text is the user prompt:\n"
-        f"{user_prompt}\n\n"
+    user_message = (
         f"{context_block}"
-        "Decompose this into atomic sub-tasks in a quantity suitable to its complexity."
+        f"User request: {user_prompt}\n\n"
+        "Decompose into atomic executable sub-tasks."
     )
     return [
-        {"role": "system", "content": DECOMPOSITION_SYSTEM},
-        {"role": "user", "content": explicit_user_message},
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_message},
     ]
 
 

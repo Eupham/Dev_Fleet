@@ -89,10 +89,34 @@ try:
         return "\n".join(lines)
 
     # ---------------------------------------------------------------------------
-    # Tri-Graph Mermaid renderer
+    # Tri-Graph renderer — Mermaid markup wrapped in mermaid.js HTML
     # ---------------------------------------------------------------------------
 
+    _MERMAID_SCRIPT = (
+        "<script>"
+        "(function(){"
+        "function r(){"
+        "if(window.mermaid){"
+        "mermaid.run({querySelector:'.mermaid'});"
+        "}else{"
+        "var s=document.createElement('script');"
+        "s.src='https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';"
+        "s.onload=function(){"
+        "mermaid.initialize({startOnLoad:false,theme:'dark',securityLevel:'loose'});"
+        "mermaid.run({querySelector:'.mermaid'});"
+        "};"
+        "document.head.appendChild(s);"
+        "}"
+        "}"
+        "if(document.readyState==='loading'){"
+        "document.addEventListener('DOMContentLoaded',r);"
+        "}else{r();}"
+        "})();"
+        "</script>"
+    )
+
     def _render_trigraph(graphs_dict: dict, nx) -> str:
+        """Return HTML string with a mermaid diagram (rendered via CDN script)."""
         from orchestrator.graph_memory import TriGraphMemory
 
         mem = TriGraphMemory()
@@ -107,10 +131,11 @@ try:
         if not (has_ep or has_sem or has_proc):
             return ""
 
+        # Use compatible subgraph syntax: subgraph id [title] (no quoted id)
         lines = ["graph TD"]
 
         if has_ep:
-            lines.append('    subgraph EPISODIC["Task Execution"]')
+            lines.append("    subgraph ep_group [Task Execution]")
             for node, data in mem.episodic.nodes(data=True):
                 nid   = _nid("ep", node)
                 label = data.get("label", "Task")
@@ -128,7 +153,7 @@ try:
             lines.append("    end")
 
         if has_sem:
-            lines.append('    subgraph SEMANTIC["Semantic Knowledge"]')
+            lines.append("    subgraph sem_group [Semantic Knowledge]")
             for node, data in mem.semantic.nodes(data=True):
                 nid   = _nid("sem", node)
                 label = data.get("label", "Concept")
@@ -138,7 +163,7 @@ try:
             lines.append("    end")
 
         if has_proc:
-            lines.append('    subgraph PROCEDURAL["Procedural Rules"]')
+            lines.append("    subgraph proc_group [Procedural Rules]")
             for node, data in mem.procedural.nodes(data=True):
                 nid   = _nid("proc", node)
                 label = data.get("label", "Tool")
@@ -154,7 +179,11 @@ try:
         for u, v in mem.procedural.edges():
             lines.append(f"    {_nid('proc', u)} --> {_nid('proc', v)}")
 
-        return "\n".join(lines)
+        mermaid_src = "\n".join(lines)
+        return (
+            f"<pre class='mermaid' style='background:transparent'>{mermaid_src}</pre>"
+            f"{_MERMAID_SCRIPT}"
+        )
 
     # ---------------------------------------------------------------------------
     # Message handler
@@ -168,15 +197,17 @@ try:
         prompt = message.content
         run_agent_stream_func = modal.Function.from_name("dev_fleet", "run_agent_stream")
 
-        # Two separate persistent messages:
-        #   task_msg  — the task list (lazy; created once DAG is available)
-        #   graph_msg — the Tri-Graph knowledge visualization
-        task_msg:  cl.Message | None = None
+        # Three separate persistent messages:
+        #   task_msg      — the task list (lazy; created once DAG is available)
+        #   workspace_msg — live workspace diary (lazy; created after first Execute)
+        #   graph_msg     — the Tri-Graph knowledge visualization
+        task_msg:      cl.Message | None = None
+        workspace_msg: cl.Message | None = None
         graph_msg: cl.Message = await cl.Message(
             content="**Tri-Graph Knowledge State**\n\n*Waiting for first node...*"
         ).send()
 
-        final_graph_markdown = ""
+        final_graph_html = ""
 
         _gen = run_agent_stream_func.remote_gen.aio(prompt)
         try:
@@ -280,15 +311,25 @@ try:
                         task_msg.content = task_list_md
                         await task_msg.update()
 
+                # --- Workspace diary (separate persistent message, created lazily) ---
+                ctx = (
+                    node_update.get("codebase_context")
+                    or state_snapshot.get("codebase_context", "")
+                )
+                if ctx:
+                    workspace_md = f"**Workspace**\n\n```\n{ctx}\n```"
+                    if workspace_msg is None:
+                        workspace_msg = await cl.Message(content=workspace_md).send()
+                    else:
+                        workspace_msg.content = workspace_md
+                        await workspace_msg.update()
+
                 # --- Tri-Graph visualization (separate persistent message) ---
                 try:
-                    graph_markdown = _render_trigraph(graphs_dict, nx)
-                    if graph_markdown:
-                        final_graph_markdown = graph_markdown
-                        graph_msg.content = (
-                            f"**Tri-Graph Knowledge State**\n\n"
-                            f"```mermaid\n{graph_markdown}\n```"
-                        )
+                    graph_html = _render_trigraph(graphs_dict, nx)
+                    if graph_html:
+                        final_graph_html = graph_html
+                        graph_msg.content = f"**Tri-Graph Knowledge State**\n\n{graph_html}"
                     else:
                         graph_msg.content = "**Tri-Graph Knowledge State**\n\n*Graph is empty — no nodes yet.*"
                     graph_msg.elements = []
@@ -297,18 +338,15 @@ try:
                     pass  # Never let graph rendering break the step loop
 
             # Finalize
-            if final_graph_markdown:
-                graph_msg.content = (
-                    f"**Tri-Graph Knowledge State — Final**\n\n"
-                    f"```mermaid\n{final_graph_markdown}\n```"
-                )
+            if final_graph_html:
+                graph_msg.content = f"**Tri-Graph Knowledge State — Final**\n\n{final_graph_html}"
                 graph_msg.elements = []
                 await graph_msg.update()
 
         except Exception as e:
             graph_msg.content = f"**Error: {type(e).__name__}: {e}**"
-            if final_graph_markdown:
-                graph_msg.content += f"\n\n```mermaid\n{final_graph_markdown}\n```"
+            if final_graph_html:
+                graph_msg.content += f"\n\n{final_graph_html}"
             graph_msg.elements = []
             await graph_msg.update()
         finally:
