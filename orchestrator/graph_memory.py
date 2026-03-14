@@ -249,9 +249,15 @@ class TriGraphMemory:
     # -- Property Graph ingestion --------------------------------------------
 
     def _ingest_node_to_pg(self, node_id: str, attrs: dict[str, Any], graph_type: str):
-        """Ingest explicitly constructed EntityNodes to bypass LLM extraction."""
+        """Ingest explicitly constructed EntityNodes to bypass LLM extraction.
+
+        Calls the NodeLabeler to assign a typed label + content summary to each
+        node.  The label/content are written back onto the NetworkX graph so
+        they survive save/load cycles without a second LLM call.
+        """
         from llama_index.core.graph_stores.types import KG_NODES_KEY
         from llama_index.core.schema import TextNode
+        from orchestrator.labeler import label_node
 
         if self.property_graph is None:
             self.property_graph = PropertyGraphIndex.from_existing(
@@ -259,14 +265,29 @@ class TriGraphMemory:
                 kg_extractors=[],
             )
 
-        text_content = f"[{graph_type.capitalize()}] {node_id}: {json.dumps(attrs, default=str)}"
-        llama_node = TextNode(text=text_content, metadata={"node_id": node_id, "graph_type": graph_type})
+        # Assign label + content via the labeler (noop if already set).
+        classification = label_node(node_id, attrs, graph_type)
+        label = classification["label"]
+        content = classification["content"]
 
-        # Pass the extracted entity directly into LlamaIndex bypassing the extractors
+        # Persist label/content back onto the NX node so _rebuild_property_graph
+        # can reuse them without re-calling the LLM on every load.
+        nx_graph = getattr(self, graph_type, None)
+        if nx_graph is not None and node_id in nx_graph:
+            nx_graph.nodes[node_id]["label"] = label
+            nx_graph.nodes[node_id]["content"] = content
+
+        enriched_attrs = {**attrs, "label": label, "content": content}
+        text_content = f"[{label}] {node_id}: {content}"
+        llama_node = TextNode(
+            text=text_content,
+            metadata={"node_id": node_id, "graph_type": graph_type, "label": label},
+        )
+
         entity_node = EntityNode(
             name=node_id,
-            label=graph_type,
-            properties={"node_id": node_id, "graph_type": graph_type, **attrs}
+            label=label,
+            properties={"node_id": node_id, "graph_type": graph_type, **enriched_attrs},
         )
         llama_node.metadata[KG_NODES_KEY] = [entity_node]
         self.property_graph.insert_nodes([llama_node])
@@ -279,6 +300,11 @@ class TriGraphMemory:
         self.property_graph.property_graph_store.upsert_relation(relation)
 
     def _rebuild_property_graph(self):
+        """Rebuild PropertyGraph from persisted NX graphs.
+
+        Uses stored ``label`` / ``content`` attributes (written by _ingest_node_to_pg)
+        so no LLM calls are needed here — labels survive across save/load cycles.
+        """
         from llama_index.core.graph_stores.types import KG_NODES_KEY
         from llama_index.core.schema import TextNode
 
@@ -289,27 +315,23 @@ class TriGraphMemory:
 
         nodes_to_insert = []
 
-        for node, data in self.semantic.nodes(data=True):
-            text_content = f"[Semantic] {node}: {json.dumps(data, default=str)}"
-            llama_node = TextNode(text=text_content, metadata={"node_id": node, "graph_type": "semantic"})
-            entity_node = EntityNode(
-                name=node,
-                label="semantic",
-                properties={"node_id": node, "graph_type": "semantic", **data}
-            )
-            llama_node.metadata[KG_NODES_KEY] = [entity_node]
-            nodes_to_insert.append(llama_node)
-
-        for node, data in self.procedural.nodes(data=True):
-            text_content = f"[Procedural] {node}: {json.dumps(data, default=str)}"
-            llama_node = TextNode(text=text_content, metadata={"node_id": node, "graph_type": "procedural"})
-            entity_node = EntityNode(
-                name=node,
-                label="procedural",
-                properties={"node_id": node, "graph_type": "procedural", **data}
-            )
-            llama_node.metadata[KG_NODES_KEY] = [entity_node]
-            nodes_to_insert.append(llama_node)
+        for graph_type, nx_graph in [("semantic", self.semantic), ("procedural", self.procedural)]:
+            for node, data in nx_graph.nodes(data=True):
+                # Use stored label/content if present; fall back to graph_type name.
+                label = data.get("label", graph_type.capitalize())
+                content = data.get("content") or json.dumps(data, default=str)
+                text_content = f"[{label}] {node}: {content}"
+                llama_node = TextNode(
+                    text=text_content,
+                    metadata={"node_id": node, "graph_type": graph_type, "label": label},
+                )
+                entity_node = EntityNode(
+                    name=node,
+                    label=label,
+                    properties={"node_id": node, "graph_type": graph_type, **data},
+                )
+                llama_node.metadata[KG_NODES_KEY] = [entity_node]
+                nodes_to_insert.append(llama_node)
 
         if nodes_to_insert:
             self.property_graph.insert_nodes(nodes_to_insert)
