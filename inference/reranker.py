@@ -69,7 +69,7 @@ class Reranker:
             RERANKER_MODEL, padding_side="left",
         )
         self.model = AutoModelForCausalLM.from_pretrained(
-            RERANKER_MODEL, torch_dtype=torch.float32,
+            RERANKER_MODEL, dtype=torch.float32,
         ).eval()
         self.token_true_id = self.tokenizer.convert_tokens_to_ids("yes")
         self.token_false_id = self.tokenizer.convert_tokens_to_ids("no")
