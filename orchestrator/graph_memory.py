@@ -2,7 +2,7 @@
 
 Each graph is a ``networkx.DiGraph``.  Utility helpers merge the current
 Episodic node with relevant Semantic/Procedural neighbours into a
-localized text representation (GraphRAG context) that is sent to the 32B
+localized text representation (GraphRAG context) that is sent to the 7B
 model for generation.
 """
 
@@ -149,14 +149,15 @@ class TriGraphMemory:
     property_graph: Any = field(default=None, repr=False, init=False)
 
     def __post_init__(self):
-        # Configure LlamaIndex Settings lazily, only when a TriGraphMemory is instantiated
-        # inside a Modal container — not at import time in the test runner.
+        # Unconditionally assign both models before any LlamaIndex call.
+        # DO NOT read LISettings.embed_model or LISettings.llm before setting them —
+        # LlamaIndex's Settings properties are lazy getters that attempt to initialise
+        # OpenAI as a default the moment they are read, which raises ValueError when
+        # no OPENAI_API_KEY is present. The only safe operation is a blind write.
         from llama_index.core import Settings as LISettings
         from orchestrator.llm_client import ModalVLLM
-        if not isinstance(LISettings.embed_model, ModalEmbeddings):
-            LISettings.embed_model = ModalEmbeddings()
-        if not isinstance(LISettings.llm, ModalVLLM):
-            LISettings.llm = ModalVLLM()
+        LISettings.embed_model = ModalEmbeddings()
+        LISettings.llm = ModalVLLM()
         self.property_graph = PropertyGraphIndex.from_documents([])
 
     # -- Serialization -------------------------------------------------------

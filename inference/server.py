@@ -1,7 +1,7 @@
 """Inference Engine — vLLM with GPU Memory Snapshots.
 
-Hosts Qwen/Qwen2.5-Coder-0.5B-Instruct behind an OpenAI-compatible API on
-a single A100-80 GB GPU.  Model weights are cached in Modal Volumes.
+Hosts Qwen/Qwen2.5-Coder-7B-Instruct behind an OpenAI-compatible API on
+a single A10G GPU.  Model weights are cached in Modal Volumes.
 GPU memory snapshots eliminate cold-start JIT compilation overhead so we
 never need to keep a GPU warm (scales to zero).
 

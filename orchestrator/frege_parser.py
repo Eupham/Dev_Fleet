@@ -230,7 +230,7 @@ def parse_prompt(
     model: str = "llm",
     codebase_context: str = "",
 ) -> TaskDAG:
-    """Decompose *user_prompt* into a ``TaskDAG`` via the 32B model.
+    """Decompose *user_prompt* into a ``TaskDAG`` via the Qwen model.
 
     Parameters
     ----------
