@@ -64,8 +64,9 @@ def generate(
     context: str,
     task_description: str,
     model: str = "llm",
+    temperature: float = 0.3,
 ) -> str:
-    """Query the 32B vLLM inference service for a code/plan response.
+    """Query the vLLM inference service for a code/plan response.
 
     Parameters
     ----------
@@ -75,6 +76,8 @@ def generate(
         The atomic task description.
     model:
         Served model alias.
+    temperature:
+        Sampling temperature (lower = more deterministic).
 
     Returns
     -------
@@ -89,7 +92,7 @@ def generate(
         {"role": "system", "content": system},
         {"role": "user", "content": task_description},
     ]
-    return chat_completion(messages, model=model, temperature=0.3, max_tokens=4096)
+    return chat_completion(messages, model=model, temperature=temperature, max_tokens=4096)
 
 
 class ModalVLLM(CustomLLM):

@@ -283,6 +283,11 @@ def routing_after_failure(state: AgentState) -> str:
 
 def route_from_supervisor(state: AgentState) -> str:
     """Route based on the intent field set by supervisor_node."""
+    intent = state.get("intent", "DECOMPOSE")
+    if intent == "CONVERSATION":
+        return "Conversation"
+    if intent == "DIRECT_EXECUTE":
+        return "Direct_Execute"
     return "Retrieve_Codebase"
 
 
@@ -291,6 +296,8 @@ def build_graph() -> StateGraph:
 
     # --- Semantic supervisor layer ---
     workflow.add_node("Supervisor", supervisor_node)
+    workflow.add_node("Conversation", conversation_node)
+    workflow.add_node("Direct_Execute", direct_execute_node)
     workflow.add_node("Retrieve_Codebase", retrieve_codebase_node)
 
     # --- Existing execution pipeline ---
@@ -308,8 +315,16 @@ def build_graph() -> StateGraph:
         route_from_supervisor,
         {
             "Retrieve_Codebase": "Retrieve_Codebase",
+            "Conversation": "Conversation",
+            "Direct_Execute": "Direct_Execute",
         },
     )
+
+    # Conversation → END (simple reply, no execution)
+    workflow.add_edge("Conversation", END)
+
+    # Direct_Execute → Execute (single-task DAG, skip decomposition)
+    workflow.add_edge("Direct_Execute", "Execute")
 
     # RAG → Decompose → existing pipeline
     workflow.add_edge("Retrieve_Codebase", "Decompose")
@@ -352,59 +367,64 @@ def agent_loop_stream(user_prompt: str):
     import queue
     import time
 
-    update_queue = queue.Queue()
+    update_queue: queue.Queue = queue.Queue()
 
     def run_graph():
-        for s in app.stream(initial_state, config=config):
-            node_name = list(s.keys())[0]
-            # The stream event contains the node's update. We merge it into the accumulated
-            # state snapshot to ensure all fields are present before sending to the UI.
-            # This avoids timing issues where app.get_state() might return a stale checkpoint.
-            s_update = s[node_name]
-            # Fetch the accumulated state from the checkpoint
-            full_state = app.get_state(config).values
-            # Ensure all required TypedDict fields are present; fill gaps from initial_state
-            # to prevent KeyError or None values in UI
-            safe_state = {
-                "user_prompt": full_state.get("user_prompt", initial_state["user_prompt"]),
-                "messages": full_state.get("messages", []),
-                "dag": full_state.get("dag"),
-                "intent": full_state.get("intent"),
-                "codebase_context": full_state.get("codebase_context", ""),
-                "current_task_idx": full_state.get("current_task_idx", 0),
-                "current_attempt": full_state.get("current_attempt", 1),
-                "sandbox_results": full_state.get("sandbox_results", []),
-                "final_output": full_state.get("final_output"),
-            }
-            update_queue.put(("update", {node_name: safe_state}))
-        update_queue.put(("done", None))
+        try:
+            for s in app.stream(initial_state, config=config):
+                node_name = list(s.keys())[0]
+                s_update = s[node_name]
+                # Fetch the accumulated checkpoint state
+                full_state = app.get_state(config).values
+                # Merge s_update into safe_state — scalar fields from s_update take
+                # precedence to avoid stale-checkpoint timing issues (e.g. intent=null).
+                safe_state = {
+                    "user_prompt": full_state.get("user_prompt", initial_state["user_prompt"]),
+                    "messages": full_state.get("messages", []),
+                    "dag": s_update["dag"] if "dag" in s_update else full_state.get("dag"),
+                    "intent": s_update["intent"] if "intent" in s_update else full_state.get("intent"),
+                    "codebase_context": s_update["codebase_context"] if "codebase_context" in s_update else full_state.get("codebase_context", ""),
+                    "current_task_idx": s_update.get("current_task_idx", full_state.get("current_task_idx", 0)),
+                    "current_attempt": s_update.get("current_attempt", full_state.get("current_attempt", 1)),
+                    "sandbox_results": full_state.get("sandbox_results", []),
+                    "final_output": s_update["final_output"] if "final_output" in s_update else full_state.get("final_output"),
+                }
+                update_queue.put(("update", node_name, safe_state, s_update))
+            update_queue.put(("done", None, None, None))
+        except Exception as exc:
+            update_queue.put(("error", exc, None, None))
 
-    t = threading.Thread(target=run_graph)
+    t = threading.Thread(target=run_graph, daemon=True)
     t.start()
 
     while True:
         try:
-            msg_type, data = update_queue.get(timeout=30.0)
+            msg = update_queue.get(timeout=30.0)
+            msg_type = msg[0]
+
             if msg_type == "done":
                 break
+            if msg_type == "error":
+                raise msg[1]
 
-            node_name = list(data.keys())[0]
-            state_data = data[node_name]
+            _, node_name, state_data, node_update = msg
 
             # Load memory to get the current graph state
             memory = TriGraphMemory.load()
             yield {
                 "step": node_name,
                 "state_snapshot": state_data,
-                "graphs": memory.to_dict()
+                "graphs": memory.to_dict(),
+                "node_update": node_update,
             }
         except queue.Empty:
-            # Yield a keep-alive message every 30 seconds
+            # Yield a keep-alive message every 30 seconds to keep Modal stream open
             memory = TriGraphMemory.load()
             yield {
                 "step": "keep-alive",
                 "state_snapshot": {"messages": ["Waiting for tasks to complete..."]},
-                "graphs": memory.to_dict()
+                "graphs": memory.to_dict(),
+                "node_update": {},
             }
 
 
