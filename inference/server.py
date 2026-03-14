@@ -156,7 +156,6 @@ class Inference:
             str(N_GPU),
             "--gpu-memory-utilization",
             "0.90",
-            "--disable-log-requests",  # Silences the massive prompt strings in logs
             # Disable CUDA-IPC custom allocator — shared-memory handles don't survive
             # CRIU migration to a different physical node, causing CudaCheckpointException.
             "--disable-custom-all-reduce",
