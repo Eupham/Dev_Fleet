@@ -9,13 +9,12 @@ A single Modal app (`dev_fleet`) with three container types:
 
 | Container | Description | Model | Resource |
 |-----------|-------------|-------|----------|
-| **Inference** | OpenAI-compatible vLLM server | `Qwen/Qwen2.5-Coder-32B-Instruct` | A100-80 GB |
+| **Inference** | OpenAI-compatible vLLM server | `Qwen/Qwen2.5-Coder-7B-Instruct` | A10G |
 | **Reranker** | Cross-encoder edge scoring | `Qwen/Qwen3-Reranker-0.6B` | CPU |
 | **Orchestrator** | Tri-Graph agent + sandboxed execution | — | CPU |
 
-All inter-container calls use **Modal-native RPC** (``.remote()``),
-eliminating HTTP overhead, idle-timeout waste, and the need for separate
-service URLs.
+All inter-container calls use **Modal-native RPC** (``.remote()``)
+within the same app.
 
 ```
 User Prompt
@@ -107,17 +106,18 @@ modal run tests/modal_test_runner.py
 ## Design Principles
 
 - **Frege's Compositionality**: Complex prompts are decomposed into a DAG of
-  atomic tasks using the 32B model, then scored against knowledge-graph
-  nodes using the Qwen3-Reranker to derive complexity/difficulty.
+  atomic tasks using the 7B model. Each task declares `inputs_needed` and
+  `outputs_produced` so the DAG validator can check that the composition is
+  correctly ordered. Tasks are then scored against knowledge-graph nodes using
+  the Qwen3-Reranker.
 - **Tri-Graph Memory**: Three NetworkX digraphs (Semantic, Procedural,
   Episodic) provide structured context for every LLM call.
 - **Dedicated Reranker**: Qwen3-Reranker-0.6B cross-encoder assesses
-  relevance between task DAG nodes and knowledge-graph nodes — no LLM
+  relevance between task DAG nodes and knowledge-graph nodes, without LLM
   prompting for scoring.
-- **Modal-Native RPC**: All inter-container calls use ``.remote()`` —
-  no HTTP overhead, no idle timeouts, no service URLs to manage.
-- **Sandboxed Execution**: All code runs in ephemeral Modal Sandboxes — the
-  host container is never at risk.
-- **Cold-Start Mitigation**: GPU memory snapshots serialize CPU+GPU state
-  after warmup so containers restore instantly — no JIT compilation needed.
-  The GPU scales to zero when idle.
+- **Modal-Native RPC**: Inter-container calls use `.remote()` within the
+  same app.
+- **Sandboxed Execution**: Code runs in ephemeral Modal Sandboxes, isolated
+  from the orchestrator container.
+- **Cold-Start Mitigation**: GPU memory snapshots are used to reduce container
+  restore time. The GPU scales to zero when idle.

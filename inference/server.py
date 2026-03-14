@@ -28,8 +28,8 @@ MINUTES = 60  # seconds
 VLLM_PORT = 8000
 N_GPU = 1
 
-MODEL_NAME = "Qwen/Qwen2.5-Coder-0.5B-Instruct"
-SERVED_MODEL_NAME = "llm"  # short alias used by the orchestrator
+MODEL_NAME = "Qwen/Qwen2.5-Coder-7B-Instruct"
+SERVED_MODEL_NAME = "llm"  # Qwen2.5-Coder-7B-Instruct
 
 # ---------------------------------------------------------------------------
 # Container image — vLLM + HuggingFace tooling

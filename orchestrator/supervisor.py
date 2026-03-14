@@ -41,36 +41,58 @@ class IntentClassification(BaseModel):
 
 
 def supervisor_node(state: "AgentState") -> dict:
-    """Classify the user's intent to route the graph appropriately."""
     import logging
     from orchestrator.llm_client import chat_completion
 
     logger = logging.getLogger("dev_fleet.supervisor")
     logger.info("Supervisor classifying intent...")
 
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are an intent classifier. "
-                "Given a user prompt, classify it as exactly one of: "
-                "CONVERSATION, DECOMPOSE, or DIRECT_EXECUTE."
-            ),
-        },
-        {"role": "user", "content": state["user_prompt"]},
-    ]
+    prompt_lower = state["user_prompt"].lower()
 
-    try:
-        classification: IntentClassification = chat_completion(
-            messages,
-            temperature=0.0,
-            max_tokens=64,
-            schema=IntentClassification,
-        )
-        intent = classification.intent
-    except Exception as exc:
-        logger.warning("Intent classification failed (%s). Defaulting to DECOMPOSE.", exc)
+    # Hard-coded override: research or build prompts always decompose.
+    # This prevents small models from misrouting multi-step tasks.
+    _decompose_signals = (
+        "research", "build", "create", "write", "implement", "develop",
+        "design", "make", "code", "program", "find", "search", "look up",
+        "analyze", "test", "fix", "debug", "deploy", "run", "execute",
+        "domain", "industry", "application", "solve", "generate",
+    )
+    _conversation_only = (
+        "hello", "hi ", "hey ", "thanks", "thank you", "what is your name",
+        "how are you", "who are you",
+    )
+
+    is_clearly_conversational = any(prompt_lower.startswith(s) or s == prompt_lower for s in _conversation_only)
+    has_action_word = any(w in prompt_lower for w in _decompose_signals)
+
+    if has_action_word and not is_clearly_conversational:
         intent = "DECOMPOSE"
+        logger.info("Supervisor override: action words detected, forcing DECOMPOSE.")
+    else:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are an intent classifier. "
+                    "Respond with exactly one word — no explanation, no punctuation.\n"
+                    "CONVERSATION: greetings, smalltalk, asking who you are.\n"
+                    "DIRECT_EXECUTE: a single simple command (e.g. 'print hello world').\n"
+                    "DECOMPOSE: everything else — research, build, multi-step tasks."
+                ),
+            },
+            {"role": "user", "content": state["user_prompt"]},
+        ]
+        try:
+            classification: IntentClassification = chat_completion(
+                messages,
+                temperature=0.0,
+                max_tokens=16,
+                schema=IntentClassification,
+            )
+            intent = classification.intent
+        except Exception as exc:
+            logger.warning("Intent classification failed (%s). Defaulting to DECOMPOSE.", exc)
+            intent = "DECOMPOSE"
 
     logger.info("Supervisor classified intent as %s", intent)
     return {

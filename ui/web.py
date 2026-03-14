@@ -16,6 +16,8 @@ web_image = (
     .add_local_python_source("ui", copy=True)
     .add_local_file("fix_chainlit.py", "/tmp/fix_chainlit.py", copy=True)
     .run_commands(["python3 /tmp/fix_chainlit.py"])
+    .add_local_dir(".chainlit", remote_path="/root/.chainlit", copy=True)
+    .add_local_dir("public", remote_path="/root/public", copy=True)
 )
 
 try:
@@ -92,28 +94,6 @@ try:
     # Tri-Graph renderer — Mermaid markup wrapped in mermaid.js HTML
     # ---------------------------------------------------------------------------
 
-    _MERMAID_SCRIPT = (
-        "<script>"
-        "(function(){"
-        "function r(){"
-        "if(window.mermaid){"
-        "mermaid.run({querySelector:'.mermaid'});"
-        "}else{"
-        "var s=document.createElement('script');"
-        "s.src='https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';"
-        "s.onload=function(){"
-        "mermaid.initialize({startOnLoad:false,theme:'dark',securityLevel:'loose'});"
-        "mermaid.run({querySelector:'.mermaid'});"
-        "};"
-        "document.head.appendChild(s);"
-        "}"
-        "}"
-        "if(document.readyState==='loading'){"
-        "document.addEventListener('DOMContentLoaded',r);"
-        "}else{r();}"
-        "})();"
-        "</script>"
-    )
 
     def _render_trigraph(graphs_dict: dict, nx) -> str:
         """Return HTML string with a mermaid diagram (rendered via CDN script)."""
@@ -180,10 +160,7 @@ try:
             lines.append(f"    {_nid('proc', u)} --> {_nid('proc', v)}")
 
         mermaid_src = "\n".join(lines)
-        return (
-            f"<pre class='mermaid' style='background:transparent'>{mermaid_src}</pre>"
-            f"{_MERMAID_SCRIPT}"
-        )
+        return f"<pre class='mermaid' style='background:transparent'>{mermaid_src}</pre>"
 
     # ---------------------------------------------------------------------------
     # Message handler

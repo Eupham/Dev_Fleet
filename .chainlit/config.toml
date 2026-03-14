@@ -95,8 +95,8 @@ reaction_on_message_received = false
     allowed_executables = [ "npx", "uvx" ]
 
 [UI]
-# Name of the assistant.
 name = "Assistant"
+custom_js = "/public/mermaid_init.js"
 
 # default_theme = "dark"
 
