@@ -97,10 +97,10 @@ def rerank_and_retrieve_node(state: AgentState) -> dict:
 
     update = {}
     if dag:
-        for task in dag["tasks"]:
+        for task in dag.get("tasks", []):
             # Stage 1 — Bi-encoder: retrieve top-15 semantically similar nodes
             retriever = memory.property_graph.as_retriever(similarity_top_k=15)
-            retrieved_nodes = retriever.retrieve(task["description"])
+            retrieved_nodes = retriever.retrieve(task.get("description", ""))
 
             candidates = []
             for node in retrieved_nodes:
@@ -115,14 +115,14 @@ def rerank_and_retrieve_node(state: AgentState) -> dict:
 
             # Stage 2 — Cross-encoder: score only the retrieved neighbourhood
             if candidates:
-                edges = rerank_candidates(task["id"], task["description"], candidates)
+                edges = rerank_candidates(task.get("id"), task.get("description", ""), candidates)
                 for edge in edges:
                     graph_type = next(
                         (c["graph"] for c in candidates if c["id"] == edge.candidate_id),
                         "unknown",
                     )
                     memory.add_episodic_edge(
-                        task["id"], edge.candidate_id,
+                        task.get("id"), edge.candidate_id,
                         {"graph": graph_type, "score": edge.score},
                     )
 
@@ -138,30 +138,32 @@ def execute_node(state: AgentState) -> dict:
     dag = state["dag"]
     idx = state["current_task_idx"]
 
-    if not dag or idx >= len(dag["tasks"]):
+    if not dag or idx >= len(dag.get("tasks", [])):
         # Done
-        return {"final_output": {"nodes": dag["tasks"] if dag else [], "graphs": memory.to_dict()}}
+        return {"final_output": {"nodes": dag.get("tasks", []) if dag else [], "graphs": memory.to_dict()}}
 
-    task = dag["tasks"][idx]
+    task = dag.get("tasks", [])[idx]
 
     # Check dependencies
     deps_ok = all(
         memory.episodic.nodes.get(d, {}).get("status") == "success"
-        for d in task["depends_on"]
+        for d in task.get("depends_on", [])
     )
-    if not deps_ok and task["depends_on"]:
-        logger.info("Skipping %s — unmet dependencies", task["id"])
+    if not deps_ok and task.get("depends_on", []):
+        logger.info("Skipping %s — unmet dependencies", task.get("id"))
         task["status"] = "failed"
-        memory.episodic.nodes[task["id"]]["status"] = "failed"
+        if task.get("id") in memory.episodic.nodes:
+            memory.episodic.nodes[task.get("id")]["status"] = "failed"
         memory.save()
         return {
             "current_task_idx": idx + 1,
             "current_attempt": 1
         }
 
-    logger.info("Executing Task: %s (attempt %d)", task["id"], state["current_attempt"])
-    memory.episodic.nodes[task["id"]]["status"] = "running"
-    graph_context = memory.build_context(task["id"])
+    logger.info("Executing Task: %s (attempt %d)", task.get("id"), state["current_attempt"])
+    if task.get("id") in memory.episodic.nodes:
+        memory.episodic.nodes[task.get("id")]["status"] = "running"
+    graph_context = memory.build_context(task.get("id"))
     # Append sandbox capability hint so the LLM knows it can read files via shell
     context = (
         graph_context
@@ -170,19 +172,22 @@ def execute_node(state: AgentState) -> dict:
         "(`open()`, `pathlib`) to read files and explore the repository before making changes."
     )
 
-    text = generate(context, task["description"])
+    tool_hint = task.get("tool_hint", "")
+    temp = 0.3 if tool_hint in ("python", "bash") else 0.7
+    text = generate(context, task.get("description", ""), temperature=temp)
 
     # Extract code from markdown blocks if tool_hint is python/bash
     code_to_run = text
-    if task["tool_hint"] in ("python", "bash"):
-        pattern = rf"```{task['tool_hint']}\n(.*?)\n```"
+    if tool_hint in ("python", "bash"):
+        pattern = rf"```{tool_hint}\n(.*?)\n```"
         match = re.search(pattern, text, re.DOTALL)
         if match:
             code_to_run = match.group(1)
 
     update = {}
-    if task["tool_hint"] not in ("python", "bash"):
-        memory.episodic.nodes[task["id"]].update(status="success", response=text[:2000])
+    if tool_hint not in ("python", "bash"):
+        if task.get("id") in memory.episodic.nodes:
+            memory.episodic.nodes[task.get("id")].update(status="success", response=text[:2000])
         task["status"] = "success"
         update["sandbox_results"] = [{"stdout": text[:1000], "stderr": "", "exit_code": 0}]
         # Proceed to next task upon success
@@ -190,24 +195,25 @@ def execute_node(state: AgentState) -> dict:
         update["current_attempt"] = 1
     else:
         tool = ModalSandboxTool()
-        raw_result = tool.forward(code=code_to_run, language=task["tool_hint"])
+        raw_result = tool.forward(code=code_to_run, language=tool_hint)
         result = SandboxResult(stdout=raw_result["stdout"], stderr=raw_result["stderr"], exit_code=raw_result["exit_code"])
         update["sandbox_results"] = [{"stdout": result.stdout, "stderr": result.stderr, "exit_code": result.exit_code}]
         if result.success:
-            memory.episodic.nodes[task["id"]].update(status="success", output=result.stdout[:2000])
+            if task.get("id") in memory.episodic.nodes:
+                memory.episodic.nodes[task.get("id")].update(status="success", output=result.stdout[:2000])
             task["status"] = "success"
             # Proceed to next task upon success
             update["current_task_idx"] = idx + 1
             update["current_attempt"] = 1
         else:
-            fail_id = f"{task['id']}_fail_{state['current_attempt']}"
+            fail_id = f"{task.get('id')}_fail_{state['current_attempt']}"
             memory.add_episodic_node(fail_id, {
                 "type": "FailedExecution", "stderr": result.stderr[:2000],
                 "exit_code": result.exit_code, "attempt": state['current_attempt'],
             })
-            memory.add_episodic_edge(task["id"], fail_id, {"relation": "failed_execution"})
+            memory.add_episodic_edge(task.get("id"), fail_id, {"relation": "failed_execution"})
             task["status"] = "failed"
-            logger.warning("Task %s attempt %d failed (exit %d)", task["id"], state['current_attempt'], result.exit_code)
+            logger.warning("Task %s attempt %d failed (exit %d)", task.get("id"), state['current_attempt'], result.exit_code)
             # DO NOT update indices here on failure, let the router route it to Handle_Failure
 
     memory.save()
@@ -219,14 +225,15 @@ def handle_failure_node(state: AgentState) -> dict:
     logger.info("Executing Handle_Failure node...")
     dag = state["dag"]
     idx = state["current_task_idx"]
-    task = dag["tasks"][idx]
+    task = dag.get("tasks", [])[idx]
     memory = TriGraphMemory.load()
 
     new_attempt = state["current_attempt"] + 1
     update = {"current_attempt": new_attempt}
 
     if new_attempt > MAX_RETRIES:
-        memory.episodic.nodes[task["id"]]["status"] = "failed"
+        if task.get("id") in memory.episodic.nodes:
+            memory.episodic.nodes[task.get("id")]["status"] = "failed"
         task["status"] = "failed"
         update["current_task_idx"] = idx + 1
         update["current_attempt"] = 1
@@ -244,24 +251,24 @@ def routing_after_execute(state: AgentState) -> str:
     if not dag:
         return END
 
-    tasks = dag["tasks"]
+    tasks = dag.get("tasks", [])
 
     if idx == 0:
-        task_just_executed = tasks[0]
+        task_just_executed = tasks[0] if tasks else {}
     elif idx >= len(tasks):
-        task_just_executed = tasks[-1]
+        task_just_executed = tasks[-1] if tasks else {}
     else:
-        if tasks[idx]["status"] == "pending":
-            task_just_executed = tasks[idx - 1]
+        if tasks[idx].get("status") == "pending":
+            task_just_executed = tasks[idx - 1] if idx > 0 else {}
         else:
             task_just_executed = tasks[idx]
 
-    if task_just_executed["status"] == "success":
+    if task_just_executed.get("status") == "success":
         if idx >= len(tasks):
             return END
         return "Execute"
 
-    if task_just_executed["status"] == "failed" and state["current_attempt"] <= MAX_RETRIES:
+    if task_just_executed.get("status") == "failed" and state["current_attempt"] <= MAX_RETRIES:
         return "Handle_Failure"
 
     if idx >= len(tasks):
@@ -270,7 +277,7 @@ def routing_after_execute(state: AgentState) -> str:
 
 
 def routing_after_failure(state: AgentState) -> str:
-    if state["current_task_idx"] >= len(state["dag"]["tasks"]):
+    if not state.get("dag") or state["current_task_idx"] >= len(state["dag"].get("tasks", [])):
         return END
     return "Execute"
 

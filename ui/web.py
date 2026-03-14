@@ -71,6 +71,13 @@ try:
                     # Parse out a clean markdown display instead of raw JSON blocks
                     content_lines = []
 
+                    if step_name == "Supervisor" and state_snapshot.get("intent"):
+                        content_lines.append(f"**Intent Classified:** {state_snapshot['intent']}")
+
+                    if step_name == "Retrieve_Codebase" and state_snapshot.get("codebase_context"):
+                        ctx = state_snapshot["codebase_context"]
+                        content_lines.append(f"**Codebase Context:**\n```python\n{ctx[:500]}...\n```")
+
                     # Show the task DAG cleanly if it's the Decompose step
                     if step_name == "Decompose" and "dag" in state_snapshot and state_snapshot["dag"]:
                         content_lines.append("**Tasks Decomposed:**")
