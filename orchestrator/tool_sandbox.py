@@ -115,7 +115,7 @@ class ModalSandboxTool(Tool):
 
             stdout = proc.stdout.read()
             stderr = proc.stderr.read()
-            exit_code = proc.returncode
+            exit_code = proc.wait()
         except Exception as exc:
             stdout = ""
             stderr = str(exc)

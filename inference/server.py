@@ -93,8 +93,9 @@ def _wait_ready(proc: subprocess.Popen) -> None:
             if resp.status_code == 200:
                 return
         except (OSError, requests.exceptions.RequestException):
-            if proc.poll() is not None:
-                raise RuntimeError(f"vLLM exited with code {proc.returncode}")
+            exit_code = proc.poll()
+            if exit_code is not None:
+                raise RuntimeError(f"vLLM exited with code {exit_code}")
             time.sleep(1)
 
 
