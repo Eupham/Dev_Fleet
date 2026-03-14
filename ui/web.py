@@ -51,7 +51,7 @@ try:
     def _mermaid_node(node_id: str, label: str, text: str) -> str:
         """Return a single Mermaid node declaration line."""
         o, c = _LABEL_SHAPE.get(label, _DEFAULT_SHAPE)
-        safe_text = text.replace('"', "'")
+        safe_text = text.replace('"', "#quot;").replace("'", "#39;")
         return f'        {node_id}{o}"{safe_text}"{c}'
 
     def _safe_label(text: str, max_len: int = 60) -> str:
