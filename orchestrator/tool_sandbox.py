@@ -104,7 +104,6 @@ class ModalSandboxTool(Tool):
             image=_sandbox_image,
             timeout=timeout,
             volumes={"/workspace": workspace_vol},
-            network_access=True,
             **({"environment_variables": env} if env else {}),
         )
 
