@@ -186,6 +186,19 @@ class TriGraphMemory:
         _invalidate_cache()
 
     @classmethod
+    def configure(cls) -> None:
+        """Pre-configure LlamaIndex global settings before instantiation.
+
+        Must be called before :meth:`load` in contexts where LlamaIndex has not
+        yet been initialised, to avoid the lazy-getter bootstrap that tries to
+        reach OpenAI when no ``OPENAI_API_KEY`` is present.
+        """
+        from llama_index.core import Settings as LISettings
+        from orchestrator.llm_client import ModalVLLM
+        LISettings.embed_model = ModalEmbeddings()
+        LISettings.llm = ModalVLLM()
+
+    @classmethod
     def load(cls) -> "TriGraphMemory":
         """Restore graphs from disk, or return the in-memory singleton when the
         underlying files have not changed since the last load.
