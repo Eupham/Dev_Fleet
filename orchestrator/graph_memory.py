@@ -31,6 +31,11 @@ from llama_index.core.embeddings import BaseEmbedding
 class ModalEmbeddings(BaseEmbedding):
     """Routes embedding requests to the isolated Modal Embedder service."""
 
+    model_name: str = "Qwen/Qwen3-Embedding-0.6B"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
     def _get_query_embedding(self, query: str) -> List[float]:
         from inference.embedder import Embedder
         import modal
@@ -81,12 +86,6 @@ class ModalEmbeddings(BaseEmbedding):
         except Exception:
             return await modal.Cls.from_name("dev_fleet", "Embedder")().encode.remote.aio(texts)
 
-Settings.embed_model = ModalEmbeddings()
-
-# Configure custom LlamaIndex LLM to use Modal vLLM
-from orchestrator.llm_client import ModalVLLM
-Settings.llm = ModalVLLM()
-
 
 # ---------------------------------------------------------------------------
 # Persistence paths (inside the mounted Modal Volume at /state)
@@ -97,6 +96,7 @@ STATE_DIR = Path(os.getenv("DEVFLEET_STATE_DIR", "/state"))
 SEMANTIC_PATH = STATE_DIR / "semantic_graph.json"
 PROCEDURAL_PATH = STATE_DIR / "procedural_graph.json"
 EPISODIC_PATH = STATE_DIR / "episodic_graph.json"
+PROP_GRAPH_DIR = STATE_DIR / "property_graph"
 
 _GRAPH_PATHS = (SEMANTIC_PATH, PROCEDURAL_PATH, EPISODIC_PATH)
 
@@ -149,7 +149,14 @@ class TriGraphMemory:
     property_graph: Any = field(default=None, repr=False, init=False)
 
     def __post_init__(self):
-        # Initialize an empty Property Graph using the global HF embeddings and Modal vLLM.
+        # Configure LlamaIndex Settings lazily, only when a TriGraphMemory is instantiated
+        # inside a Modal container — not at import time in the test runner.
+        from llama_index.core import Settings as LISettings
+        from orchestrator.llm_client import ModalVLLM
+        if not isinstance(LISettings.embed_model, ModalEmbeddings):
+            LISettings.embed_model = ModalEmbeddings()
+        if not isinstance(LISettings.llm, ModalVLLM):
+            LISettings.llm = ModalVLLM()
         self.property_graph = PropertyGraphIndex.from_documents([])
 
     # -- Serialization -------------------------------------------------------
@@ -164,6 +171,16 @@ class TriGraphMemory:
         ]:
             data = nx.node_link_data(graph)
             path.write_text(json.dumps(data, default=str))
+        # Persist PropertyGraph (embeddings included) to avoid recomputation on load.
+        if self.property_graph is not None:
+            try:
+                PROP_GRAPH_DIR.mkdir(parents=True, exist_ok=True)
+                self.property_graph.storage_context.persist(persist_dir=str(PROP_GRAPH_DIR))
+            except Exception as _pg_exc:
+                import logging
+                logging.getLogger("dev_fleet.graph_memory").warning(
+                    "PropertyGraph persist failed (%s) — embeddings will be recomputed on next load.", _pg_exc
+                )
         # Evict the cache so the next load() reads the freshly written files.
         _invalidate_cache()
 
@@ -191,8 +208,23 @@ class TriGraphMemory:
                     data = json.loads(path.read_text())
                     setattr(mem, attr, nx.node_link_graph(data))
 
-            # Rebuild PropertyGraph (including edge Relations) from the loaded NX graphs.
-            mem._rebuild_property_graph()
+            # Restore PropertyGraph from disk if available; otherwise rebuild from NX graphs.
+            # Loading from disk avoids O(N) remote embedding calls on every cold load.
+            try:
+                if PROP_GRAPH_DIR.exists():
+                    from llama_index.core import StorageContext, load_index_from_storage
+                    storage_context = StorageContext.from_defaults(
+                        persist_dir=str(PROP_GRAPH_DIR)
+                    )
+                    mem.property_graph = load_index_from_storage(storage_context)
+                else:
+                    mem._rebuild_property_graph()
+            except Exception as _load_exc:
+                import logging
+                logging.getLogger("dev_fleet.graph_memory").warning(
+                    "PropertyGraph restore failed (%s) — rebuilding from NX graphs.", _load_exc
+                )
+                mem._rebuild_property_graph()
 
             # Populate the singleton cache.
             _cached_instance = mem

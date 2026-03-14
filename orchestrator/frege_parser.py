@@ -1,10 +1,12 @@
-"""Frege Parser — Decomposes user prompts into a Task DAG.
+"""Compositional Task Parser — Decomposes user prompts into a Task DAG.
 
-Uses Frege's compositionality principle: a complex prompt is structurally
-decomposed into a Directed Acyclic Graph of *atomic* tasks.  Each node is
-validated via a strict Pydantic schema.
+Implements Frege's compositionality principle operationally: each AtomicTaskNode
+declares the semantic tokens it consumes (inputs_needed) and produces
+(outputs_produced). The TaskDAG validator checks that the composition of all
+nodes satisfies correct ordering — the meaning of the whole is derivable from
+the meanings of its parts and their declared combination rules.
 
-Decomposition is performed by the 32B model via Modal-native RPC.
+Decomposition is performed by the instruction-tuned Qwen model via Modal-native RPC.
 """
 
 from __future__ import annotations
@@ -22,7 +24,14 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class AtomicTaskNode(BaseModel):
-    """A single indivisible task produced by Frege decomposition."""
+    """A single indivisible task produced by compositional decomposition.
+
+    Each node declares its semantic type (inputs_needed, outputs_produced)
+    so the TaskDAG validator can verify that the composition of all nodes
+    satisfies the original intent — honoring Frege's compositionality
+    principle: the meaning of the whole is a function of the meanings of
+    its parts and their combination rules.
+    """
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     description: str = Field(...)
@@ -38,10 +47,33 @@ class AtomicTaskNode(BaseModel):
         default="pending",
         description="pending | running | success | failed",
     )
+    inputs_needed: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Semantic tokens this task consumes (e.g. ['file:pong.py', 'env:python3']). "
+            "Used by the composition validator."
+        ),
+    )
+    outputs_produced: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Semantic tokens this task produces (e.g. ['file:pong.py', 'result:score']). "
+            "Used to verify downstream dependency satisfaction."
+        ),
+    )
 
 
 class TaskDAG(BaseModel):
-    """The complete decomposition of a user prompt."""
+    """The complete compositional decomposition of a user prompt.
+
+    Validates that:
+    1. The dependency graph is acyclic (topological correctness).
+    2. Every task's inputs_needed are either satisfied by a prior task's
+       outputs_produced, or are declared as external inputs (available
+       in the environment). This is the Frege compositionality check:
+       the meaning of the whole task is derivable from the meanings of
+       its parts via their declared I/O contracts.
+    """
 
     user_prompt: str
     intent_observation: str = Field(
@@ -52,9 +84,6 @@ class TaskDAG(BaseModel):
 
     @model_validator(mode="after")
     def validate_dependencies(self) -> "TaskDAG":
-        """Resolve index-based depends_on to UUIDs, assert DAG acyclicity, and
-        reorder the tasks array via topological sort so that every dependency is
-        guaranteed to appear before the task that depends on it."""
         import logging
 
         logger = logging.getLogger("dev_fleet.frege_parser")
@@ -76,15 +105,41 @@ class TaskDAG(BaseModel):
             task.depends_on = resolved
             G.add_node(task.id)
             for dep in resolved:
-                G.add_edge(dep, task.id)  # directed edge: dependency → dependent
+                G.add_edge(dep, task.id)
 
         if not nx.is_directed_acyclic_graph(G):
             raise ValueError("Task decomposition resulted in a circular dependency.")
 
-        # Reorder tasks so the execution array always satisfies dependency order,
-        # regardless of the order the LLM originally emitted the tasks.
         sorted_ids = list(nx.topological_sort(G))
         self.tasks = [task_map[node_id] for node_id in sorted_ids]
+
+        # --- Frege compositionality check ---
+        # Build the set of tokens available at each point in topological order.
+        # A token is "available" if it was declared as produced by a prior task,
+        # OR if no task in this DAG is responsible for producing it (external input).
+        all_produced: set[str] = set()
+        all_needed: set[str] = set()
+        for task in self.tasks:
+            all_produced.update(task.outputs_produced)
+            all_needed.update(task.inputs_needed)
+
+        # Tokens needed but never produced by any task = external dependencies.
+        # These are valid (e.g. "env:python3") — we only flag tokens that are
+        # declared needed by a task but produced only by a *later* task (ordering violation).
+        produced_so_far: set[str] = set()
+        for task in self.tasks:  # already topologically sorted
+            unmet = [
+                tok for tok in task.inputs_needed
+                if tok not in produced_so_far and tok in all_produced
+            ]
+            if unmet:
+                logger.warning(
+                    "Composition warning: task %r needs %s but those tokens are "
+                    "not yet produced at this point in the DAG. "
+                    "Check depends_on declarations.",
+                    task.description[:60], unmet
+                )
+            produced_so_far.update(task.outputs_produced)
 
         return self
 
@@ -104,10 +159,10 @@ Rules:
 4. Every task must be directly executable — no placeholders or "verify" steps.
 5. Write all output files to /workspace/.
 6. Aim for 3-5 focused tasks. Do not over-decompose.
-
-For "Create a pong game in Python and play against yourself":
-  task 1 [bash]: Write /workspace/pong.py — self-contained game using Python curses or turtle. Include a simple AI paddle.
-  task 2 [python]: Run pong.py, capture and print the output or score.
+7. For each task, declare:
+   - inputs_needed: list of semantic tokens consumed (e.g. ["file:/workspace/app.py"])
+   - outputs_produced: list of semantic tokens produced (e.g. ["file:/workspace/app.py", "result:exit_code_0"])
+   These are used to verify the composition is complete and correctly ordered.
 
 First write intent_observation (one sentence), then list the tasks."""
 

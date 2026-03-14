@@ -13,6 +13,7 @@ import logging
 import operator
 import os
 import re
+import uuid
 import warnings
 from typing import Annotated, Any, List, Optional, TypedDict
 
@@ -58,6 +59,7 @@ class AgentState(TypedDict):
     current_attempt: int
     sandbox_results: Annotated[List[SandboxResult], operator.add]
     final_output: Optional[dict]
+    next_route: Optional[str]
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +175,13 @@ def _append_workspace_entry(
     return "\n".join(lines)
 
 
+def _with_task_status(dag_dict: dict, idx: int, status: str) -> dict:
+    """Return a new dag dict with tasks[idx].status updated. Never mutates in place."""
+    tasks = [t.copy() for t in dag_dict.get("tasks", [])]
+    tasks[idx] = {**tasks[idx], "status": status}
+    return {**dag_dict, "tasks": tasks}
+
+
 def execute_node(state: AgentState) -> dict:
     """Generate code, execute in sandbox, record outcome."""
     memory = TriGraphMemory.load()
@@ -192,12 +201,13 @@ def execute_node(state: AgentState) -> dict:
     )
     if not deps_ok and task.get("depends_on", []):
         logger.info("Skipping %s — unmet dependencies", task.get("id"))
-        task["status"] = "failed"
         memory.episodic.nodes[task.get("id")]["status"] = "failed"
         memory.save()
         return {
+            "dag": _with_task_status(dag, idx, "failed"),
             "current_task_idx": idx + 1,
-            "current_attempt": 1
+            "current_attempt": 1,
+            "next_route": "Execute" if idx + 1 < len(dag.get("tasks", [])) else "__end__",
         }
 
     logger.info("Executing Task: %s (attempt %d)", task.get("id"), state["current_attempt"])
@@ -234,10 +244,11 @@ def execute_node(state: AgentState) -> dict:
     update = {}
     if tool_hint not in ("python", "bash"):
         memory.episodic.nodes[task.get("id")].update(status="success", response=text[:2000])
-        task["status"] = "success"
+        update["dag"] = _with_task_status(dag, idx, "success")
         update["sandbox_results"] = [{"stdout": text[:1000], "stderr": "", "exit_code": 0, "code": "", "task_description": task.get("description", ""), "tool_hint": tool_hint}]
         update["current_task_idx"] = idx + 1
         update["current_attempt"] = 1
+        update["next_route"] = "Execute" if idx + 1 < len(dag.get("tasks", [])) else "__end__"
         # Update workspace context with task result
         update["codebase_context"] = _append_workspace_entry(
             state.get("codebase_context", ""), task.get("description", ""), tool_hint, text[:300], "", 0
@@ -258,9 +269,10 @@ def execute_node(state: AgentState) -> dict:
         )
         if result.success:
             memory.episodic.nodes[task.get("id")].update(status="success", output=result.stdout[:2000])
-            task["status"] = "success"
+            update["dag"] = _with_task_status(dag, idx, "success")
             update["current_task_idx"] = idx + 1
             update["current_attempt"] = 1
+            update["next_route"] = "Execute" if idx + 1 < len(dag.get("tasks", [])) else "__end__"
         else:
             fail_id = f"{task.get('id')}_fail_{state['current_attempt']}"
             memory.add_episodic_node(fail_id, {
@@ -268,9 +280,9 @@ def execute_node(state: AgentState) -> dict:
                 "exit_code": result.exit_code, "attempt": state['current_attempt'],
             })
             memory.add_episodic_edge(task.get("id"), fail_id, {"relation": "failed_execution"})
-            task["status"] = "failed"
+            update["dag"] = _with_task_status(dag, idx, "failed")
+            update["next_route"] = "Handle_Failure"
             logger.warning("Task %s attempt %d failed (exit %d)", task.get("id"), state['current_attempt'], result.exit_code)
-            # DO NOT update indices here on failure, let the router route it to Handle_Failure
 
     memory.save()
     return update
@@ -309,10 +321,16 @@ def handle_failure_node(state: AgentState) -> dict:
 
     if new_attempt > MAX_RETRIES:
         memory.episodic.nodes[task.get("id")]["status"] = "failed"
-        task["status"] = "failed"
+        dag = state["dag"]
+        tasks = [t.copy() for t in dag.get("tasks", [])]
+        tasks[idx] = {**tasks[idx], "status": "failed"}
+        update["dag"] = {**dag, "tasks": tasks}
         update["current_task_idx"] = idx + 1
         update["current_attempt"] = 1
+        update["next_route"] = "Execute" if idx + 1 < len(tasks) else "__end__"
         logger.warning("Task %s exhausted retries — marking failed. Last error: %s", task.get("id"), last_stderr[:200])
+    else:
+        update["next_route"] = "Execute"
 
     memory.save()
     return update
@@ -320,36 +338,12 @@ def handle_failure_node(state: AgentState) -> dict:
 
 def routing_after_execute(state: AgentState) -> str:
     """Determine the next step based on execution outcome."""
-    dag = state["dag"]
-    idx = state["current_task_idx"]
-
-    # We must look at the previous task to see if it failed, because if it succeeded, idx has already incremented
-    if not dag:
+    route = state.get("next_route") or "__end__"
+    dag = state.get("dag")
+    idx = state.get("current_task_idx", 0)
+    if route == "__end__" or not dag or idx >= len(dag.get("tasks", [])):
         return END
-
-    tasks = dag.get("tasks", [])
-
-    if idx == 0:
-        task_just_executed = tasks[0]
-    elif idx >= len(tasks):
-        task_just_executed = tasks[-1]
-    else:
-        if tasks[idx].get("status") == "pending":
-            task_just_executed = tasks[idx - 1]
-        else:
-            task_just_executed = tasks[idx]
-
-    if task_just_executed.get("status") == "success":
-        if idx >= len(tasks):
-            return END
-        return "Execute"
-
-    if task_just_executed.get("status") == "failed" and state["current_attempt"] <= MAX_RETRIES:
-        return "Handle_Failure"
-
-    if idx >= len(tasks):
-        return END
-    return "Execute"
+    return route
 
 
 def routing_after_failure(state: AgentState) -> str:
@@ -419,6 +413,17 @@ def build_graph() -> StateGraph:
     return workflow.compile(checkpointer=checkpointer)
 
 
+_compiled_graph: Any = None
+
+
+def get_compiled_graph():
+    """Return the module-level compiled graph, building it once on first call."""
+    global _compiled_graph
+    if _compiled_graph is None:
+        _compiled_graph = build_graph()
+    return _compiled_graph
+
+
 # ---------------------------------------------------------------------------
 # Public Entrypoint
 # ---------------------------------------------------------------------------
@@ -435,30 +440,29 @@ def agent_loop_stream(user_prompt: str):
         "current_task_idx": 0,
         "current_attempt": 1,
         "sandbox_results": [],
-        "final_output": None
+        "final_output": None,
+        "next_route": None,
     }
 
-    app = build_graph()
+    app = get_compiled_graph()
 
-    # We use a static thread_id for this single synchronous loop run
-    config = {"configurable": {"thread_id": "1"}}
+    run_id = str(uuid.uuid4())
+    config = {"configurable": {"thread_id": run_id}}
 
-    # Stream over nodes for real-time visibility
     import threading
-    import queue
-    import time
+    import queue as _queue
 
-    update_queue: queue.Queue = queue.Queue()
+    update_queue: _queue.Queue = _queue.Queue()
+    stop_event = threading.Event()
 
     def run_graph():
         try:
             for s in app.stream(initial_state, config=config):
+                if stop_event.is_set():
+                    break
                 node_name = list(s.keys())[0]
                 s_update = s[node_name]
-                # Fetch the accumulated checkpoint state
                 full_state = app.get_state(config).values
-                # Merge s_update into safe_state — scalar fields from s_update take
-                # precedence to avoid stale-checkpoint timing issues (e.g. intent=null).
                 safe_state = {
                     "user_prompt": full_state.get("user_prompt", initial_state["user_prompt"]),
                     "messages": full_state.get("messages", []),
@@ -469,6 +473,7 @@ def agent_loop_stream(user_prompt: str):
                     "current_attempt": s_update.get("current_attempt", full_state.get("current_attempt", 1)),
                     "sandbox_results": full_state.get("sandbox_results", []),
                     "final_output": s_update["final_output"] if "final_output" in s_update else full_state.get("final_output"),
+                    "next_route": s_update.get("next_route", full_state.get("next_route")),
                 }
                 update_queue.put(("update", node_name, safe_state, s_update))
             update_queue.put(("done", None, None, None))
@@ -478,35 +483,34 @@ def agent_loop_stream(user_prompt: str):
     t = threading.Thread(target=run_graph, daemon=True)
     t.start()
 
-    while True:
-        try:
-            msg = update_queue.get(timeout=30.0)
-            msg_type = msg[0]
-
-            if msg_type == "done":
-                break
-            if msg_type == "error":
-                raise msg[1]
-
-            _, node_name, state_data, node_update = msg
-
-            # Load memory to get the current graph state
-            memory = TriGraphMemory.load()
-            yield {
-                "step": node_name,
-                "state_snapshot": state_data,
-                "graphs": memory.to_dict(),
-                "node_update": node_update,
-            }
-        except queue.Empty:
-            # Yield a keep-alive message every 30 seconds to keep Modal stream open
-            memory = TriGraphMemory.load()
-            yield {
-                "step": "keep-alive",
-                "state_snapshot": {"messages": ["Waiting for tasks to complete..."]},
-                "graphs": memory.to_dict(),
-                "node_update": {},
-            }
+    try:
+        while True:
+            try:
+                msg = update_queue.get(timeout=30.0)
+                msg_type = msg[0]
+                if msg_type == "done":
+                    break
+                if msg_type == "error":
+                    raise msg[1]
+                _, node_name, state_data, node_update = msg
+                memory = TriGraphMemory.load()
+                yield {
+                    "step": node_name,
+                    "state_snapshot": state_data,
+                    "graphs": memory.to_dict(),
+                    "node_update": node_update,
+                }
+            except _queue.Empty:
+                memory = TriGraphMemory.load()
+                yield {
+                    "step": "keep-alive",
+                    "state_snapshot": {"messages": ["Waiting for tasks to complete..."]},
+                    "graphs": memory.to_dict(),
+                    "node_update": {},
+                }
+    except GeneratorExit:
+        stop_event.set()
+        t.join(timeout=5.0)
 
 
 

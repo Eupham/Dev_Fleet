@@ -120,6 +120,23 @@ def run_agent_stream(user_prompt: str) -> Iterator[Dict[str, Any]]:
 
 @app.function(
     image=orchestrator_image,
+    volumes={"/state": graph_state_vol},
+)
+def clear_graph_state() -> str:
+    """One-time cleanup: wipe all persisted graph state. Run once after deploy."""
+    import shutil
+    from pathlib import Path
+    state_dir = Path("/state")
+    for f in state_dir.glob("*.json"):
+        f.unlink()
+    prop_dir = state_dir / "property_graph"
+    if prop_dir.exists():
+        shutil.rmtree(prop_dir)
+    return "State cleared."
+
+
+@app.function(
+    image=orchestrator_image,
     volumes={
         "/state": graph_state_vol,
         "/workspace": workspace_vol,

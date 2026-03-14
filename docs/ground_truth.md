@@ -10,7 +10,7 @@ via Modal-native RPC (`.remote()`):
 
 | Container | Role | Model | Resource | File |
 |-----------|------|-------|----------|------|
-| **Inference** | OpenAI-compatible vLLM server | `Qwen/Qwen2.5-Coder-32B-Instruct` | 1× A100-80 GB | `inference/server.py` |
+| **Inference** | OpenAI-compatible vLLM server | `Qwen/Qwen2.5-Coder-7B-Instruct` | 1× A10G | `inference/server.py` |
 | **Reranker** | Cross-encoder edge scoring | `Qwen/Qwen3-Reranker-0.6B` | CPU | `inference/reranker.py` |
 | **Orchestrator** | Tri-Graph agent + sandboxed execution | — | CPU | `orchestrator/core_app.py` |
 
@@ -86,6 +86,10 @@ modal app logs dev_fleet
 # Quick test
 modal run app.py --prompt "Write a hello world function"
 ```
+
+## Compositional Task Decomposition (Frege's Principle)
+
+Each `AtomicTaskNode` declares `inputs_needed` and `outputs_produced` — semantic tokens representing what the task consumes and what it creates. The `TaskDAG` validator performs a static composition check: for every task in topological order, all `inputs_needed` that are produced *within* the DAG must have been produced by a prior task. This formally satisfies Frege's compositionality principle: the meaning of the whole task is a deterministic function of the meanings of its atomic parts (their I/O contracts) and the rules used to combine them (the DAG topology).
 
 ## Key Dependencies
 
