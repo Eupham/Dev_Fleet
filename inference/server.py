@@ -119,7 +119,7 @@ def _warmup() -> None:
 
 @app.cls(
     image=vllm_image,
-    gpu=modal.gpu.A10G(),
+    gpu="A10G",
     scaledown_window=2,  # Modal minimum (>0 required); snapshots handle cold-start
     timeout=10 * MINUTES,
     retries=0,
