@@ -43,10 +43,9 @@ vllm_image = (
     .add_local_python_source("fleet_app", copy=True)
     .add_local_python_source("orchestrator", copy=True)
     .uv_pip_install(
-        "vllm==0.7.3",
-        "huggingface-hub==0.36.0",
+        "vllm==0.17.1",
+        "huggingface-hub==1.7.1",
         "hf_transfer",
-        "outlines>=0.0.38",
     )
     .run_commands(
         [
@@ -74,7 +73,6 @@ vllm_image = (
 with vllm_image.imports():
     import requests
     import json
-    import outlines
 
 # ---------------------------------------------------------------------------
 # Volumes — persistent caches for vLLM compilation artifacts
@@ -85,6 +83,33 @@ vllm_cache_vol = modal.Volume.from_name("vllm-cache-vol", create_if_missing=True
 # ---------------------------------------------------------------------------
 # Snapshot helpers
 # ---------------------------------------------------------------------------
+
+def _flatten_schema(schema: dict) -> dict:
+    """Recursively inline all $ref references so xgrammar can compile the schema
+    natively without falling back to outlines.
+
+    Pydantic v2 emits $defs + $ref for nested models.  xgrammar's JSON-schema
+    compiler does not support $ref resolution, so we resolve them here before
+    the schema is handed to vLLM's response_format.
+    """
+    import copy
+    schema = copy.deepcopy(schema)
+    defs = schema.pop("$defs", {})
+    if not defs:
+        return schema
+
+    def _resolve(obj):
+        if isinstance(obj, dict):
+            if "$ref" in obj and len(obj) == 1:
+                ref_key = obj["$ref"].split("/")[-1]
+                return _resolve(copy.deepcopy(defs[ref_key]))
+            return {k: _resolve(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_resolve(i) for i in obj]
+        return obj
+
+    return _resolve(schema)
+
 
 def _wait_ready(proc: subprocess.Popen) -> None:
     """Busy-poll until the vLLM server is accepting connections."""
@@ -165,7 +190,7 @@ class Inference:
             "--disable-custom-all-reduce",
             # Snapshot-specific flags
             "--enforce-eager",
-            "--dtype=half",
+            "--dtype=bfloat16",  # matches model's native dtype — no casting
             "--max-num-seqs",
             "4",
             "--max-model-len",
@@ -211,7 +236,7 @@ class Inference:
                     "type": "json_schema",
                     "json_schema": {
                         "name": schema.__name__,
-                        "schema": schema.model_json_schema()
+                        "schema": _flatten_schema(schema.model_json_schema()),
                     }
                 }
             }
