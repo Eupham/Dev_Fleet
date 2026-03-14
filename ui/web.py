@@ -7,10 +7,11 @@ from fleet_app import app
 web_image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install(
-        "fastapi", "uvicorn", "jinja2", "python-multipart", "pydantic>=2.5", "networkx>=3.2",
-        "chainlit>=1.1.0",
-        "llama-index-core>=0.10.0", "llama-index-embeddings-huggingface>=0.1.0",
-        "smolagents>=1.0.0", "orjson>=3.9.0",
+        "fastapi>=0.135.1", "uvicorn>=0.41.0", "jinja2>=3.1.6", "python-multipart>=0.0.22",
+        "pydantic>=2.12.5", "networkx>=3.6.1",
+        "chainlit>=2.10.0",
+        "llama-index-core>=0.14.17", "llama-index-embeddings-huggingface>=0.7.0",
+        "smolagents>=1.24.0", "orjson>=3.11.7",
     )
     .add_local_python_source("fleet_app", copy=True)
     .add_local_python_source("orchestrator", copy=True)
