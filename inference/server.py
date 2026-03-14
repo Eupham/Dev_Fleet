@@ -161,7 +161,7 @@ class Inference:
             "--disable-custom-all-reduce",
             # Snapshot-specific flags
             "--enforce-eager",
-            "--dtype=bfloat16",  # matches model's native dtype — no casting
+            "--dtype=half",  # T4 supports float16, not bfloat16
             "--max-num-seqs",
             "4",
             "--max-model-len",
