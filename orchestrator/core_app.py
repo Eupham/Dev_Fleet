@@ -82,6 +82,8 @@ def log_event(event_type: str, payload: dict | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
+from typing import AsyncIterator
+
 @app.function(
     image=orchestrator_image,
     volumes={
@@ -91,8 +93,8 @@ def log_event(event_type: str, payload: dict | None = None) -> None:
     timeout=30 * 60,
     # Generators in Modal cannot have retries
 )
-def run_agent_stream(user_prompt: str) -> Iterator[Dict[str, Any]]:
-    """Execute a single agent loop iteration for *user_prompt* as a generator.
+async def run_agent_stream(user_prompt: str) -> AsyncIterator[Dict[str, Any]]:
+    """Execute a single agent loop iteration for *user_prompt* as an async generator.
 
     Yields intermediate states of the LangGraph execution to allow
     real-time rendering in the Chainlit UI.
@@ -111,7 +113,7 @@ def run_agent_stream(user_prompt: str) -> Iterator[Dict[str, Any]]:
     log_event("agent_start", {"prompt": user_prompt[:200]})
 
     try:
-        for update in agent_loop_stream(user_prompt):
+        async for update in agent_loop_stream(user_prompt):
             yield update
         log_event("agent_complete", {})
     except GeneratorExit:

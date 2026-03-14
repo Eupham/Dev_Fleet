@@ -428,8 +428,8 @@ def get_compiled_graph():
 # Public Entrypoint
 # ---------------------------------------------------------------------------
 
-def agent_loop_stream(user_prompt: str):
-    """Run the full agent loop via LangGraph and stream the steps out."""
+async def agent_loop_stream(user_prompt: str):
+    """Run the full agent loop via LangGraph and stream the steps out asynchronously."""
 
     initial_state: AgentState = {
         "user_prompt": user_prompt,
@@ -449,82 +449,59 @@ def agent_loop_stream(user_prompt: str):
     run_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": run_id}}
 
-    import threading
-    import queue as _queue
-
-    update_queue: _queue.Queue = _queue.Queue()
-    stop_event = threading.Event()
-
-    def run_graph():
-        try:
-            for s in app.stream(initial_state, config=config):
-                if stop_event.is_set():
-                    break
-                node_name = list(s.keys())[0]
-                s_update = s[node_name]
-                full_state = app.get_state(config).values
-                safe_state = {
-                    "user_prompt": full_state.get("user_prompt", initial_state["user_prompt"]),
-                    "messages": full_state.get("messages", []),
-                    "dag": s_update["dag"] if "dag" in s_update else full_state.get("dag"),
-                    "intent": s_update["intent"] if "intent" in s_update else full_state.get("intent"),
-                    "codebase_context": s_update["codebase_context"] if "codebase_context" in s_update else full_state.get("codebase_context", ""),
-                    "current_task_idx": s_update.get("current_task_idx", full_state.get("current_task_idx", 0)),
-                    "current_attempt": s_update.get("current_attempt", full_state.get("current_attempt", 1)),
-                    "sandbox_results": full_state.get("sandbox_results", []),
-                    "final_output": s_update["final_output"] if "final_output" in s_update else full_state.get("final_output"),
-                    "next_route": s_update.get("next_route", full_state.get("next_route")),
-                }
-                update_queue.put(("update", node_name, safe_state, s_update))
-            update_queue.put(("done", None, None, None))
-        except Exception as exc:
-            update_queue.put(("error", exc, None, None))
-
-    t = threading.Thread(target=run_graph, daemon=True)
-    t.start()
-
     try:
-        while True:
-            try:
-                msg = update_queue.get(timeout=30.0)
-                msg_type = msg[0]
-                if msg_type == "done":
-                    break
-                if msg_type == "error":
-                    raise msg[1]
-                _, node_name, state_data, node_update = msg
-                memory = TriGraphMemory.load()
-                yield {
-                    "step": node_name,
-                    "state_snapshot": state_data,
-                    "graphs": memory.to_dict(),
-                    "node_update": node_update,
-                }
-            except _queue.Empty:
-                memory = TriGraphMemory.load()
-                yield {
-                    "step": "keep-alive",
-                    "state_snapshot": {"messages": ["Waiting for tasks to complete..."]},
-                    "graphs": memory.to_dict(),
-                    "node_update": {},
-                }
+        async for s in app.astream(initial_state, config=config):
+            node_name = list(s.keys())[0]
+            s_update = s[node_name]
+            full_state = await app.aget_state(config)
+            full_state_values = full_state.values
+
+            safe_state = {
+                "user_prompt": full_state_values.get("user_prompt", initial_state["user_prompt"]),
+                "messages": full_state_values.get("messages", []),
+                "dag": s_update["dag"] if "dag" in s_update else full_state_values.get("dag"),
+                "intent": s_update["intent"] if "intent" in s_update else full_state_values.get("intent"),
+                "codebase_context": s_update["codebase_context"] if "codebase_context" in s_update else full_state_values.get("codebase_context", ""),
+                "current_task_idx": s_update.get("current_task_idx", full_state_values.get("current_task_idx", 0)),
+                "current_attempt": s_update.get("current_attempt", full_state_values.get("current_attempt", 1)),
+                "sandbox_results": full_state_values.get("sandbox_results", []),
+                "final_output": s_update["final_output"] if "final_output" in s_update else full_state_values.get("final_output"),
+                "next_route": s_update.get("next_route", full_state_values.get("next_route")),
+            }
+
+            TriGraphMemory.configure()
+            memory = TriGraphMemory.load()
+
+            yield {
+                "step": node_name,
+                "state_snapshot": safe_state,
+                "graphs": memory.to_dict(),
+                "node_update": s_update,
+            }
+
     except GeneratorExit:
-        stop_event.set()
-        t.join(timeout=5.0)
+        logger.info("agent_loop_stream cancelled by caller.")
+        pass
 
 
 
 def agent_loop(user_prompt: str) -> dict[str, Any]:
     """Run the full agent loop synchronously and return the final graph state."""
-    final_output = None
-    # Just run through the stream until the end
-    for update in agent_loop_stream(user_prompt):
-        if update["state_snapshot"].get("final_output"):
-            final_output = update["state_snapshot"]["final_output"]
+    import asyncio
+
+    async def run_sync():
+        final_output = None
+        async for update in agent_loop_stream(user_prompt):
+            if update["state_snapshot"].get("final_output"):
+                final_output = update["state_snapshot"]["final_output"]
+        return final_output
+
+    final_output = asyncio.run(run_sync())
 
     if final_output:
         return final_output
 
+    TriGraphMemory.configure()
     memory = TriGraphMemory.load()
     return {
         "nodes": [],
