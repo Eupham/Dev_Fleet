@@ -10,8 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Dict
 
-from smolagents import Tool
-
 
 # ---------------------------------------------------------------------------
 # Sandbox result schema
@@ -32,41 +30,12 @@ class SandboxResult:
 
 
 # ---------------------------------------------------------------------------
-# Tool Sandbox Class
+# Tool Sandbox Class — plain Python, no framework coupling
 # ---------------------------------------------------------------------------
 
 
-class ModalSandboxTool(Tool):
-    """A tool to execute bash or python code in a secure, ephemeral Modal sandbox."""
-
-    name = "modal_sandbox_tool"
-    description = (
-        "Run code inside an ephemeral Modal Sandbox. "
-        "Useful for safely executing untrusted Python or Bash code. "
-        "Returns a dict with stdout, stderr, and exit_code."
-    )
-    inputs = {
-        "code": {
-            "type": "string",
-            "description": "Source code or shell commands to execute."
-        },
-        "language": {
-            "type": "string",
-            "description": "The language to execute, either 'python' or 'bash'.",
-            "nullable": True
-        },
-        "env": {
-            "type": "object",
-            "description": "Optional environment variables passed to the sandbox.",
-            "nullable": True
-        },
-        "timeout": {
-            "type": "integer",
-            "description": "Maximum execution time in seconds.",
-            "nullable": True
-        }
-    }
-    output_type = "any" # Dictionary containing stdout, stderr, and exit_code
+class ModalSandboxTool:
+    """Execute bash or python code in a secure, ephemeral Modal sandbox."""
 
     def forward(
         self,
@@ -125,7 +94,6 @@ class ModalSandboxTool(Tool):
         finally:
             sandbox.terminate()
 
-        # We return a dict as expected by the new Tool abstraction
         return {
             "stdout": stdout,
             "stderr": stderr,
@@ -134,7 +102,7 @@ class ModalSandboxTool(Tool):
 
 
 # ---------------------------------------------------------------------------
-# Public API Backwards Compatibility
+# Public API
 # ---------------------------------------------------------------------------
 
 

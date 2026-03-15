@@ -12,7 +12,7 @@ import json
 import logging
 import sys
 from datetime import datetime, timezone
-from typing import Iterator, Dict, Any
+from typing import AsyncIterator, Dict, Any
 
 import modal
 
@@ -45,7 +45,6 @@ orchestrator_image = (
         "llama-index-core>=0.10.0",
         "llama-index>=0.10.0",
         "llama-index-embeddings-huggingface>=0.1.0",
-        "smolagents>=1.0.0",
         "langgraph>=0.0.10",
     )
 )
@@ -91,8 +90,8 @@ def log_event(event_type: str, payload: dict | None = None) -> None:
     timeout=30 * 60,
     # Generators in Modal cannot have retries
 )
-def run_agent_stream(user_prompt: str) -> Iterator[Dict[str, Any]]:
-    """Execute a single agent loop iteration for *user_prompt* as a generator.
+async def run_agent_stream(user_prompt: str) -> AsyncIterator[Dict[str, Any]]:
+    """Execute a single agent loop iteration for *user_prompt* as an async generator.
 
     Yields intermediate states of the LangGraph execution to allow
     real-time rendering in the Chainlit UI.
@@ -111,7 +110,7 @@ def run_agent_stream(user_prompt: str) -> Iterator[Dict[str, Any]]:
     log_event("agent_start", {"prompt": user_prompt[:200]})
 
     try:
-        for update in agent_loop_stream(user_prompt):
+        async for update in agent_loop_stream(user_prompt):
             yield update
         log_event("agent_complete", {})
     except GeneratorExit:

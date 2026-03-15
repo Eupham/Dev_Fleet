@@ -6,21 +6,29 @@ web_image = (
     .pip_install(
         "fastapi>=0.135.1", "uvicorn>=0.41.0", "jinja2>=3.1.6", "python-multipart>=0.0.22",
         "pydantic>=2.12.5", "networkx>=3.6.1",
-        "chainlit>=2.10.0",
+        "chainlit==2.10.0",  # pinned to match the monkey-patch target
         "llama-index-core>=0.14.17", "llama-index-embeddings-huggingface>=0.7.0",
-        "smolagents>=1.24.0", "orjson>=3.11.7", "pathspec>=0.12.1",
+        "orjson>=3.11.7", "pathspec>=0.12.1",
     )
     .add_local_python_source("fleet_app", copy=True)
     .add_local_python_source("orchestrator", copy=True)
     .add_local_python_source("inference", copy=True)
     .add_local_python_source("ui", copy=True)
-    .add_local_file("fix_chainlit.py", "/tmp/fix_chainlit.py", copy=True)
-    .run_commands(["python3 /tmp/fix_chainlit.py"])
+    .add_local_file("fix_chainlit.py", "/root/fix_chainlit.py", copy=True)
     .add_local_dir(".chainlit", remote_path="/root/.chainlit", copy=True)
     .add_local_dir("public", remote_path="/root/public", copy=True)
 )
 
 try:
+    import sys
+    import os
+    # Apply Chainlit monkey-patch before importing chainlit proper
+    sys.path.insert(0, "/root")
+    try:
+        import fix_chainlit  # noqa: F401 — applies patch on import
+    except ImportError:
+        pass
+
     import chainlit as cl
     import orjson
 
@@ -207,6 +215,7 @@ try:
                             "DECOMPOSE":      "multi-step task — routing to full decomposition pipeline",
                             "DIRECT_EXECUTE": "single-step task — bypassing decomposition",
                             "CONVERSATION":   "conversational query — routing to direct response",
+                            "RESEARCH":       "web research — fetching online data before decomposition",
                         }.get(intent, intent)
                         content_lines.append(f"**Classified:** {intent} — {intent_desc}")
 
@@ -225,10 +234,8 @@ try:
                             for i, t in enumerate(tasks, 1):
                                 desc = t.get("description", "") if isinstance(t, dict) else getattr(t, "description", "")
                                 hint = t.get("tool_hint", "") if isinstance(t, dict) else getattr(t, "tool_hint", "")
-                                deps = t.get("depends_on", []) if isinstance(t, dict) else getattr(t, "depends_on", [])
                                 hint_tag = f" `[{hint}]`" if hint else ""
-                                dep_tag  = f" *(depends on {len(deps)} task{'s' if len(deps) != 1 else ''})*" if deps else ""
-                                content_lines.append(f"{i}. {desc}{hint_tag}{dep_tag}")
+                                content_lines.append(f"{i}. {desc}{hint_tag}")
 
                     elif step_name == "Rerank_and_Retrieve":
                         msgs = node_update.get("messages", [])

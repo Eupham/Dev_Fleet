@@ -1,9 +1,11 @@
 """Agent Loop — Cyclic state machine for the Dev Fleet orchestrator via LangGraph.
 
-Ties together: Frege parser → Qwen3-Reranker → Graph memory →
-LLM generation → Sandbox execution → Episodic graph update.
+Ties together: Supervisor → (Research?) → Retrieve_Codebase → Decompose →
+Rerank_and_Retrieve → Execute → (Validate?) → END.
 
 All inference calls use Modal-native RPC (no HTTP, no timeouts).
+Difficulty is derived from reranker scores + graph topology (no LLM call).
+Composition is observed by diffing the sandbox filesystem (not declared).
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import os
 import re
 import uuid
 import warnings
-from typing import Annotated, Any, List, Optional, TypedDict
+from typing import Annotated, Any, AsyncIterator, List, Optional, TypedDict
 
 # Silence LangGraph custom-type serialization warnings (non-fatal, cosmetic noise)
 warnings.filterwarnings(
@@ -29,15 +31,16 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from orchestrator.frege_parser import AtomicTaskNode, TaskDAG, parse_prompt
 from orchestrator.graph_memory import TriGraphMemory
-from orchestrator.llm_client import generate
-from orchestrator.rerank_engine import rerank_candidates
+from orchestrator.llm_client import generate, chat_completion
+from orchestrator.rerank_engine import rerank_candidates, ScoredEdge
 from orchestrator.tool_sandbox import SandboxResult, ModalSandboxTool
 from orchestrator.supervisor import supervisor_node, conversation_node, direct_execute_node
 from orchestrator.codebase_rag import retrieve_codebase_node
 
 logger = logging.getLogger("dev_fleet.agent_loop")
 
-MAX_RETRIES = 2
+MAX_RETRIES = 2     # per-task retry budget
+MAX_ITERATIONS = 5  # outer validation/iteration budget
 
 
 # ---------------------------------------------------------------------------
@@ -48,18 +51,20 @@ class AgentState(TypedDict):
     """The state passed between nodes in the LangGraph."""
     user_prompt: str
     messages: Annotated[List[str], operator.add]
-    dag: Optional[TaskDAG]
-    # Semantic supervisor routing fields
+    dag: Optional[dict]
     intent: Optional[str]
     codebase_context: str
-    # Memory is complex to pass natively via deepcopy in langgraph if it has unpickleable bits
-    # We will instantiate or load inside nodes and persist at end, or keep minimal metadata.
-    # To keep the state clean, we track which tasks are done:
     current_task_idx: int
     current_attempt: int
-    sandbox_results: Annotated[List[SandboxResult], operator.add]
+    sandbox_results: Annotated[List[dict], operator.add]
     final_output: Optional[dict]
     next_route: Optional[str]
+    # Composition ledger data (JSON-serializable)
+    composition_deltas: dict
+    # Per-task difficulty scores
+    task_difficulties: dict
+    # Outer iteration counter for validation loop
+    iteration_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -71,12 +76,15 @@ def decompose_node(state: AgentState) -> dict:
     logger.info("Executing Decompose node...")
     memory = TriGraphMemory.load()
 
-    dag = parse_prompt(state["user_prompt"], codebase_context=state.get("codebase_context", ""))
+    is_research = state.get("intent") == "RESEARCH"
+    dag = parse_prompt(
+        state["user_prompt"],
+        codebase_context=state.get("codebase_context", ""),
+        is_research=is_research,
+    )
 
     for task in dag.tasks:
         memory.add_episodic_node(task.id, task.model_dump())
-        for dep_id in task.depends_on:
-            memory.add_episodic_edge(dep_id, task.id, {"relation": "depends_on"})
 
     memory.save()
     return {
@@ -86,30 +94,28 @@ def decompose_node(state: AgentState) -> dict:
 
 
 def rerank_and_retrieve_node(state: AgentState) -> dict:
-    """Score task edges against semantic/procedural graphs via a Retrieve-then-Rerank pipeline.
+    """Score task edges against semantic/procedural graphs via Retrieve-then-Rerank.
 
-    Wrapped in a top-level try/except: if the embedder cold-starts, times out,
-    or is otherwise unavailable, this node degrades gracefully and the graph
-    continues to Execute rather than silently ending the LangGraph stream.
+    Also computes per-task difficulty from reranker scores + graph topology.
+    Difficulty is stored in state for model routing in execute_node.
     """
     logger.info("Executing Rerank_and_Retrieve node...")
     try:
         memory = TriGraphMemory.load()
         dag = state["dag"]
 
-        # Skip retrieval if the semantic/procedural graphs are empty.
-        # Calling the embedder against an empty index wastes an RPC round-trip
-        # and can cause the graph to hang on cold-starts.
         pg_has_nodes = (
             memory.semantic.number_of_nodes() > 0
             or memory.procedural.number_of_nodes() > 0
         )
 
+        # Collect all reranker edges for difficulty computation
+        all_reranker_edges: list[ScoredEdge] = []
+
         if dag and pg_has_nodes:
             for task in dag.get("tasks", []):
                 try:
-                    # Stage 1 — Bi-encoder: retrieve top-15 semantically similar nodes
-                    retriever = memory.property_graph.as_retriever(similarity_top_k=15)
+                    retriever = memory._ensure_property_graph().as_retriever(similarity_top_k=15)
                     retrieved_nodes = retriever.retrieve(task.get("description", ""))
                 except Exception as retrieval_exc:
                     logger.warning("Retrieval failed for task %s (%s) — skipping.", task.get("id"), retrieval_exc)
@@ -126,10 +132,10 @@ def rerank_and_retrieve_node(state: AgentState) -> dict:
                             "description": node.text,
                         })
 
-                # Stage 2 — Cross-encoder: score only the retrieved neighbourhood
                 if candidates:
                     try:
                         edges = rerank_candidates(task.get("id"), task.get("description", ""), candidates)
+                        all_reranker_edges.extend(edges)
                         for edge in edges:
                             graph_type = next(
                                 (c["graph"] for c in candidates if c["id"] == edge.candidate_id),
@@ -143,10 +149,37 @@ def rerank_and_retrieve_node(state: AgentState) -> dict:
                         logger.warning("Reranking failed for task %s (%s) — skipping.", task.get("id"), rerank_exc)
 
             memory.save()
-            return {"messages": ["Reranked and linked episodic tasks to semantic and procedural knowledge."]}
 
-        # Empty graphs — skip linking, proceed immediately to Execute
-        return {"messages": ["Knowledge graphs empty — skipping linking, proceeding to execution."]}
+        # Compute difficulty for each task
+        task_difficulties = {}
+        if dag:
+            import networkx as nx
+            from orchestrator.difficulty import compute_base_difficulty, propagate_difficulty
+
+            # Build a simple linear graph from task order as pre-execution proxy
+            task_list = dag.get("tasks", [])
+            G = nx.DiGraph()
+            for i, t in enumerate(task_list):
+                G.add_node(t.get("id"))
+                if i > 0:
+                    G.add_edge(task_list[i - 1].get("id"), t.get("id"))
+
+            base = {
+                t.get("id"): compute_base_difficulty(t.get("id"), all_reranker_edges, G)
+                for t in task_list
+            }
+            task_difficulties = propagate_difficulty(G, base)
+
+            # Store difficulty on episodic nodes
+            for task_id, score in task_difficulties.items():
+                if task_id in memory.episodic.nodes:
+                    memory.episodic.nodes[task_id]["difficulty"] = score
+            memory.save()
+
+        return {
+            "task_difficulties": task_difficulties,
+            "messages": ["Reranked and linked episodic tasks to semantic and procedural knowledge."],
+        }
 
     except Exception as exc:
         logger.warning("Rerank_and_Retrieve failed (%s) — skipping knowledge linking.", exc)
@@ -183,41 +216,32 @@ def _with_task_status(dag_dict: dict, idx: int, status: str) -> dict:
 
 
 def execute_node(state: AgentState) -> dict:
-    """Generate code, execute in sandbox, record outcome."""
+    """Generate code, execute in sandbox, record outcome and filesystem delta."""
     memory = TriGraphMemory.load()
     dag = state["dag"]
     idx = state["current_task_idx"]
 
     if not dag or idx >= len(dag.get("tasks", [])):
-        # Done
         return {"final_output": {"nodes": dag.get("tasks", []) if dag else [], "graphs": memory.to_dict()}}
 
     task = dag.get("tasks", [])[idx]
 
-    # Check dependencies
-    deps_ok = all(
-        memory.episodic.nodes.get(d, {}).get("status") == "success"
-        for d in task.get("depends_on", [])
-    )
-    if not deps_ok and task.get("depends_on", []):
-        logger.info("Skipping %s — unmet dependencies", task.get("id"))
-        memory.episodic.nodes[task.get("id")]["status"] = "failed"
-        memory.save()
-        return {
-            "dag": _with_task_status(dag, idx, "failed"),
-            "current_task_idx": idx + 1,
-            "current_attempt": 1,
-            "next_route": "Execute" if idx + 1 < len(dag.get("tasks", [])) else "__end__",
-        }
-
     logger.info("Executing Task: %s (attempt %d)", task.get("id"), state["current_attempt"])
-    memory.episodic.nodes[task.get("id")]["status"] = "running"
+    if task.get("id") in memory.episodic.nodes:
+        memory.episodic.nodes[task.get("id")]["status"] = "running"
 
-    # build_context calls the embedder — wrap so a cold-start failure doesn't crash the node
+    # Get difficulty tier for model routing
+    task_id = task.get("id", "")
+    difficulties = state.get("task_difficulties", {})
+    diff_score = difficulties.get(task_id, 0.5)
+    from orchestrator.difficulty import difficulty_to_tier
+    tier = difficulty_to_tier(diff_score)
+    logger.info("Task %s difficulty=%.2f tier=%s", task_id, diff_score, tier)
+
     try:
-        graph_context = memory.build_context(task.get("id"))
+        graph_context = memory.build_context(task_id)
     except Exception as ctx_exc:
-        logger.warning("build_context failed for %s (%s) — using empty context.", task.get("id"), ctx_exc)
+        logger.warning("build_context failed for %s (%s) — using empty context.", task_id, ctx_exc)
         graph_context = "(no context)"
 
     tool_hint = task.get("tool_hint", "")
@@ -231,9 +255,8 @@ def execute_node(state: AgentState) -> dict:
     )
 
     temp = 0.3 if tool_hint in ("python", "bash") else 0.7
-    text = generate(context, task.get("description", ""), temperature=temp)
+    text = generate(context, task.get("description", ""), temperature=temp, tier=tier)
 
-    # Extract code from markdown blocks if tool_hint is python/bash
     code_to_run = text
     if tool_hint in ("python", "bash"):
         pattern = rf"```{tool_hint}\n(.*?)\n```"
@@ -241,24 +264,52 @@ def execute_node(state: AgentState) -> dict:
         if match:
             code_to_run = match.group(1)
 
-    update = {}
+    update: dict = {}
     if tool_hint not in ("python", "bash"):
-        memory.episodic.nodes[task.get("id")].update(status="success", response=text[:2000])
+        memory.episodic.nodes.get(task_id, {}).update(status="success", response=text[:2000])
         update["dag"] = _with_task_status(dag, idx, "success")
         update["sandbox_results"] = [{"stdout": text[:1000], "stderr": "", "exit_code": 0, "code": "", "task_description": task.get("description", ""), "tool_hint": tool_hint}]
         update["current_task_idx"] = idx + 1
         update["current_attempt"] = 1
-        update["next_route"] = "Execute" if idx + 1 < len(dag.get("tasks", [])) else "__end__"
-        # Update workspace context with task result
+        update["next_route"] = "Execute" if idx + 1 < len(dag.get("tasks", [])) else "Collect_Outputs"
         update["codebase_context"] = _append_workspace_entry(
             state.get("codebase_context", ""), task.get("description", ""), tool_hint, text[:300], "", 0
         )
     else:
         tool = ModalSandboxTool()
+
+        # --- Execution-grounded composition: capture before/after state ---
+        from orchestrator.composition import WorkspaceState, CompositionLedger
+        composition_deltas = dict(state.get("composition_deltas", {}))
+
+        try:
+            before = WorkspaceState.capture(tool)
+        except Exception:
+            before = WorkspaceState.empty()
+
         raw_result = tool.forward(code=code_to_run, language=tool_hint)
-        result = SandboxResult(stdout=raw_result["stdout"], stderr=raw_result["stderr"], exit_code=raw_result["exit_code"])
-        update["sandbox_results"] = [{"stdout": result.stdout, "stderr": result.stderr, "exit_code": result.exit_code, "code": code_to_run[:2000], "task_description": task.get("description", ""), "tool_hint": tool_hint}]
-        # Update workspace context after every sandbox execution
+        result = SandboxResult(
+            stdout=raw_result["stdout"],
+            stderr=raw_result["stderr"],
+            exit_code=raw_result["exit_code"],
+        )
+
+        try:
+            after = WorkspaceState.capture(tool)
+            delta = after.diff(before)
+            composition_deltas[task_id] = delta.to_dict()
+        except Exception as comp_exc:
+            logger.warning("Composition capture failed for %s (%s)", task_id, comp_exc)
+
+        update["composition_deltas"] = composition_deltas
+        update["sandbox_results"] = [{
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.exit_code,
+            "code": code_to_run[:2000],
+            "task_description": task.get("description", ""),
+            "tool_hint": tool_hint,
+        }]
         update["codebase_context"] = _append_workspace_entry(
             state.get("codebase_context", ""),
             task.get("description", ""),
@@ -267,22 +318,24 @@ def execute_node(state: AgentState) -> dict:
             result.stderr,
             result.exit_code,
         )
+
         if result.success:
-            memory.episodic.nodes[task.get("id")].update(status="success", output=result.stdout[:2000])
+            memory.episodic.nodes.get(task_id, {}).update(status="success", output=result.stdout[:2000])
             update["dag"] = _with_task_status(dag, idx, "success")
             update["current_task_idx"] = idx + 1
             update["current_attempt"] = 1
-            update["next_route"] = "Execute" if idx + 1 < len(dag.get("tasks", [])) else "__end__"
+            is_last = idx + 1 >= len(dag.get("tasks", []))
+            update["next_route"] = "Collect_Outputs" if is_last else "Execute"
         else:
-            fail_id = f"{task.get('id')}_fail_{state['current_attempt']}"
+            fail_id = f"{task_id}_fail_{state['current_attempt']}"
             memory.add_episodic_node(fail_id, {
                 "type": "FailedExecution", "stderr": result.stderr[:2000],
                 "exit_code": result.exit_code, "attempt": state['current_attempt'],
             })
-            memory.add_episodic_edge(task.get("id"), fail_id, {"relation": "failed_execution"})
+            memory.add_episodic_edge(task_id, fail_id, {"relation": "failed_execution"})
             update["dag"] = _with_task_status(dag, idx, "failed")
             update["next_route"] = "Handle_Failure"
-            logger.warning("Task %s attempt %d failed (exit %d)", task.get("id"), state['current_attempt'], result.exit_code)
+            logger.warning("Task %s attempt %d failed (exit %d)", task_id, state['current_attempt'], result.exit_code)
 
     memory.save()
     return update
@@ -296,7 +349,6 @@ def handle_failure_node(state: AgentState) -> dict:
     task = dag.get("tasks", [])[idx]
     memory = TriGraphMemory.load()
 
-    # Extract the last sandbox error for UI visibility
     last_stderr = ""
     last_exit_code = 1
     sandbox_results = state.get("sandbox_results", [])
@@ -320,15 +372,16 @@ def handle_failure_node(state: AgentState) -> dict:
     }
 
     if new_attempt > MAX_RETRIES:
-        memory.episodic.nodes[task.get("id")]["status"] = "failed"
-        dag = state["dag"]
+        if task.get("id") in memory.episodic.nodes:
+            memory.episodic.nodes[task.get("id")]["status"] = "failed"
         tasks = [t.copy() for t in dag.get("tasks", [])]
         tasks[idx] = {**tasks[idx], "status": "failed"}
         update["dag"] = {**dag, "tasks": tasks}
         update["current_task_idx"] = idx + 1
         update["current_attempt"] = 1
-        update["next_route"] = "Execute" if idx + 1 < len(tasks) else "__end__"
-        logger.warning("Task %s exhausted retries — marking failed. Last error: %s", task.get("id"), last_stderr[:200])
+        is_last = idx + 1 >= len(tasks)
+        update["next_route"] = "Collect_Outputs" if is_last else "Execute"
+        logger.warning("Task %s exhausted retries — marking failed.", task.get("id"))
     else:
         update["next_route"] = "Execute"
 
@@ -336,20 +389,252 @@ def handle_failure_node(state: AgentState) -> dict:
     return update
 
 
+def collect_outputs_node(state: AgentState) -> dict:
+    """Collect files from /workspace and include them in final_output.
+
+    Runs find + reads key files (README, entry points, test results).
+    Also derives the observed composition graph from the ledger and stores
+    it in episodic memory.
+    """
+    logger.info("Collecting outputs from /workspace...")
+    memory = TriGraphMemory.load()
+    dag = state.get("dag")
+
+    tool = ModalSandboxTool()
+    workspace_files: dict[str, str] = {}
+
+    try:
+        # List all files in workspace
+        list_result = tool.forward(
+            code="find /workspace -type f | sort",
+            language="bash",
+            timeout=30,
+        )
+        file_list = [
+            f.strip() for f in list_result.get("stdout", "").strip().splitlines()
+            if f.strip()
+        ]
+
+        # Read key files (limit to first 20 to avoid blowing up the state)
+        priority_patterns = [
+            "README", "readme", "main", "app", "test_", "_test", "results", "output", "report"
+        ]
+        priority_files = []
+        other_files = []
+        for f in file_list:
+            basename = os.path.basename(f).lower()
+            if any(p.lower() in basename for p in priority_patterns):
+                priority_files.append(f)
+            else:
+                other_files.append(f)
+
+        files_to_read = (priority_files + other_files)[:20]
+        for filepath in files_to_read:
+            read_result = tool.forward(
+                code=f"cat '{filepath}' 2>/dev/null | head -200",
+                language="bash",
+                timeout=15,
+            )
+            content = read_result.get("stdout", "").strip()
+            if content:
+                workspace_files[filepath] = content[:3000]
+
+    except Exception as exc:
+        logger.warning("Output collection failed (%s) — skipping file collection.", exc)
+
+    # Derive observed composition graph from ledger and store in episodic memory
+    try:
+        from orchestrator.composition import CompositionLedger
+        composition_deltas = state.get("composition_deltas", {})
+        if composition_deltas:
+            ledger = CompositionLedger.from_dict(composition_deltas)
+            observed_graph = ledger.derive_dependency_graph()
+            for src, dst in observed_graph.edges():
+                memory.add_episodic_edge(src, dst, {"relation": "observed_composition"})
+            memory.save()
+    except Exception as comp_exc:
+        logger.warning("Composition graph derivation failed (%s)", comp_exc)
+
+    return {
+        "final_output": {
+            "nodes": dag.get("tasks", []) if dag else [],
+            "graphs": memory.to_dict(),
+            "workspace_files": workspace_files,
+        },
+        "messages": [f"Collected {len(workspace_files)} files from /workspace."],
+        "next_route": "Validate",
+    }
+
+
+_VALIDATION_SYSTEM = """You are a software quality validator. Given:
+- The original user request
+- A list of completed tasks with their outputs
+- Key files from the workspace
+
+Evaluate whether the output satisfies the original request. Consider:
+1. Does it address the core requirement?
+2. Are there obvious errors or missing pieces?
+3. Would a user be satisfied with this result?
+
+Respond with a JSON object: {"satisfied": true/false, "issues": ["issue1", ...], "corrective_tasks": ["task description 1", ...]}
+Only set corrective_tasks if satisfied is false."""
+
+
+def validate_node(state: AgentState) -> dict:
+    """Validate outputs and optionally create corrective tasks.
+
+    Runs test suite if generated, checks for errors, uses LLM to evaluate
+    whether the output satisfies the original prompt. If not satisfied and
+    within MAX_ITERATIONS budget, creates corrective tasks.
+    """
+    logger.info("Validate node: evaluating output quality...")
+    dag = state.get("dag")
+    iteration = state.get("iteration_count", 0)
+
+    if iteration >= MAX_ITERATIONS:
+        logger.info("Reached MAX_ITERATIONS=%d — accepting current output.", MAX_ITERATIONS)
+        return {
+            "messages": [f"Validation complete (iteration limit {MAX_ITERATIONS} reached)."],
+            "next_route": "__end__",
+        }
+
+    final_output = state.get("final_output", {})
+    workspace_files = final_output.get("workspace_files", {})
+
+    # Run test files if present
+    tool = ModalSandboxTool()
+    test_results = ""
+    try:
+        test_run = tool.forward(
+            code=(
+                "cd /workspace && "
+                "if find . -name 'test_*.py' -o -name '*_test.py' | grep -q .; then "
+                "  python -m pytest --tb=short -q 2>&1 | head -50; "
+                "else "
+                "  echo 'No test files found'; "
+                "fi"
+            ),
+            language="bash",
+            timeout=60,
+        )
+        test_results = test_run.get("stdout", "").strip()[:2000]
+    except Exception as exc:
+        test_results = f"[test runner error: {exc}]"
+
+    # LLM evaluation
+    file_summary = "\n".join(
+        f"--- {path} ---\n{content[:500]}"
+        for path, content in list(workspace_files.items())[:5]
+    )
+    task_summary = "\n".join(
+        f"- {t.get('description', '')[:100]} [{t.get('status', 'unknown')}]"
+        for t in (dag.get("tasks", []) if dag else [])
+    )
+
+    messages = [
+        {"role": "system", "content": _VALIDATION_SYSTEM},
+        {"role": "user", "content": (
+            f"Original request: {state['user_prompt']}\n\n"
+            f"Completed tasks:\n{task_summary}\n\n"
+            f"Test results:\n{test_results or '(no tests run)'}\n\n"
+            f"Key workspace files:\n{file_summary or '(no files found)'}"
+        )},
+    ]
+
+    class ValidationResult(BaseModel):
+        satisfied: bool
+        issues: list[str] = []
+        corrective_tasks: list[str] = []
+
+    from pydantic import BaseModel
+    try:
+        result: ValidationResult = chat_completion(
+            messages, temperature=0.2, max_tokens=1024, schema=ValidationResult
+        )
+    except Exception as exc:
+        logger.warning("Validation LLM call failed (%s) — accepting output.", exc)
+        return {
+            "messages": ["Validation check failed — accepting current output."],
+            "next_route": "__end__",
+        }
+
+    if result.satisfied:
+        logger.info("Validation satisfied — output accepted.")
+        return {
+            "messages": [f"✓ Validation passed (iteration {iteration + 1})."],
+            "next_route": "__end__",
+        }
+
+    logger.info("Validation not satisfied (issues: %s) — creating corrective tasks.", result.issues)
+
+    if not result.corrective_tasks:
+        return {
+            "messages": ["Validation: output not fully satisfying but no corrective tasks suggested — accepting."],
+            "next_route": "__end__",
+        }
+
+    # Create corrective tasks and re-enter execution
+    corrective_nodes = [
+        AtomicTaskNode(
+            description=desc,
+            tool_hint="python" if any(kw in desc.lower() for kw in ("python", "script", "implement", "write")) else "bash",
+        )
+        for desc in result.corrective_tasks
+    ]
+
+    existing_tasks = [AtomicTaskNode(**t) for t in dag.get("tasks", [])] if dag else []
+    all_tasks = existing_tasks + corrective_nodes
+
+    new_dag = TaskDAG(
+        user_prompt=state["user_prompt"],
+        intent_observation=f"Corrective iteration {iteration + 1}: {'; '.join(result.issues[:2])}",
+        tasks=all_tasks,
+    )
+
+    memory = TriGraphMemory.load()
+    for task in corrective_nodes:
+        memory.add_episodic_node(task.id, task.model_dump())
+    memory.save()
+
+    return {
+        "dag": new_dag.model_dump(),
+        "current_task_idx": len(existing_tasks),  # Start at first corrective task
+        "current_attempt": 1,
+        "iteration_count": iteration + 1,
+        "messages": [
+            f"Validation iteration {iteration + 1}: {len(corrective_nodes)} corrective tasks created. "
+            f"Issues: {'; '.join(result.issues[:3])}"
+        ],
+        "next_route": "Execute",
+    }
+
+
 def routing_after_execute(state: AgentState) -> str:
     """Determine the next step based on execution outcome."""
-    route = state.get("next_route") or "__end__"
+    route = state.get("next_route") or "Collect_Outputs"
     dag = state.get("dag")
     idx = state.get("current_task_idx", 0)
-    if route == "__end__" or not dag or idx >= len(dag.get("tasks", [])):
-        return END
-    return route
+    if route == "Handle_Failure":
+        return "Handle_Failure"
+    if route == "Collect_Outputs" or not dag or idx >= len(dag.get("tasks", [])):
+        return "Collect_Outputs"
+    return "Execute"
 
 
 def routing_after_failure(state: AgentState) -> str:
-    if state["current_task_idx"] >= len(state["dag"].get("tasks", [])):
-        return END
+    dag = state.get("dag")
+    idx = state.get("current_task_idx", 0)
+    route = state.get("next_route", "Execute")
+    if route == "Collect_Outputs" or not dag or idx >= len(dag.get("tasks", [])):
+        return "Collect_Outputs"
     return "Execute"
+
+
+def routing_after_validate(state: AgentState) -> str:
+    route = state.get("next_route", "__end__")
+    if route == "Execute":
+        return "Execute"
+    return END
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +648,8 @@ def route_from_supervisor(state: AgentState) -> str:
         return "Conversation"
     if intent == "DIRECT_EXECUTE":
         return "Direct_Execute"
+    if intent == "RESEARCH":
+        return "Research"
     return "Retrieve_Codebase"
 
 
@@ -373,13 +660,16 @@ def build_graph() -> StateGraph:
     workflow.add_node("Supervisor", supervisor_node)
     workflow.add_node("Conversation", conversation_node)
     workflow.add_node("Direct_Execute", direct_execute_node)
+    workflow.add_node("Research", lambda s: __import__("orchestrator.web_research", fromlist=["research_node"]).research_node(s))
     workflow.add_node("Retrieve_Codebase", retrieve_codebase_node)
 
-    # --- Existing execution pipeline ---
+    # --- Execution pipeline ---
     workflow.add_node("Decompose", decompose_node)
     workflow.add_node("Rerank_and_Retrieve", rerank_and_retrieve_node)
     workflow.add_node("Execute", execute_node)
     workflow.add_node("Handle_Failure", handle_failure_node)
+    workflow.add_node("Collect_Outputs", collect_outputs_node)
+    workflow.add_node("Validate", validate_node)
 
     # Entry point
     workflow.add_edge(START, "Supervisor")
@@ -392,22 +682,50 @@ def build_graph() -> StateGraph:
             "Retrieve_Codebase": "Retrieve_Codebase",
             "Conversation": "Conversation",
             "Direct_Execute": "Direct_Execute",
+            "Research": "Research",
         },
     )
 
-    # Conversation → END (simple reply, no execution)
+    # Conversation → END
     workflow.add_edge("Conversation", END)
 
-    # Direct_Execute → Execute (single-task DAG, skip decomposition)
+    # Direct_Execute → Execute
     workflow.add_edge("Direct_Execute", "Execute")
+
+    # Research → Decompose (research results are in codebase_context)
+    workflow.add_edge("Research", "Decompose")
 
     # RAG → Decompose → existing pipeline
     workflow.add_edge("Retrieve_Codebase", "Decompose")
     workflow.add_edge("Decompose", "Rerank_and_Retrieve")
     workflow.add_edge("Rerank_and_Retrieve", "Execute")
 
-    workflow.add_conditional_edges("Execute", routing_after_execute)
-    workflow.add_conditional_edges("Handle_Failure", routing_after_failure)
+    workflow.add_conditional_edges(
+        "Execute",
+        routing_after_execute,
+        {
+            "Execute": "Execute",
+            "Handle_Failure": "Handle_Failure",
+            "Collect_Outputs": "Collect_Outputs",
+        },
+    )
+    workflow.add_conditional_edges(
+        "Handle_Failure",
+        routing_after_failure,
+        {
+            "Execute": "Execute",
+            "Collect_Outputs": "Collect_Outputs",
+        },
+    )
+    workflow.add_edge("Collect_Outputs", "Validate")
+    workflow.add_conditional_edges(
+        "Validate",
+        routing_after_validate,
+        {
+            "Execute": "Execute",
+            END: END,
+        },
+    )
 
     checkpointer = MemorySaver()
     return workflow.compile(checkpointer=checkpointer)
@@ -425,12 +743,14 @@ def get_compiled_graph():
 
 
 # ---------------------------------------------------------------------------
-# Public Entrypoint
+# Public Entrypoint — async generator (LangGraph 1.0 astream)
 # ---------------------------------------------------------------------------
 
-def agent_loop_stream(user_prompt: str):
-    """Run the full agent loop via LangGraph and stream the steps out."""
+async def agent_loop_stream(user_prompt: str) -> AsyncIterator[dict]:
+    """Run the full agent loop via LangGraph and stream the steps out.
 
+    Uses LangGraph's native astream() — no threading, no queue wrapper.
+    """
     initial_state: AgentState = {
         "user_prompt": user_prompt,
         "messages": [],
@@ -442,91 +762,57 @@ def agent_loop_stream(user_prompt: str):
         "sandbox_results": [],
         "final_output": None,
         "next_route": None,
+        "composition_deltas": {},
+        "task_difficulties": {},
+        "iteration_count": 0,
     }
 
-    app = get_compiled_graph()
-
+    graph = get_compiled_graph()
     run_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": run_id}}
 
-    import threading
-    import queue as _queue
-
-    update_queue: _queue.Queue = _queue.Queue()
-    stop_event = threading.Event()
-
-    def run_graph():
-        try:
-            for s in app.stream(initial_state, config=config):
-                if stop_event.is_set():
-                    break
-                node_name = list(s.keys())[0]
-                s_update = s[node_name]
-                full_state = app.get_state(config).values
-                safe_state = {
-                    "user_prompt": full_state.get("user_prompt", initial_state["user_prompt"]),
-                    "messages": full_state.get("messages", []),
-                    "dag": s_update["dag"] if "dag" in s_update else full_state.get("dag"),
-                    "intent": s_update["intent"] if "intent" in s_update else full_state.get("intent"),
-                    "codebase_context": s_update["codebase_context"] if "codebase_context" in s_update else full_state.get("codebase_context", ""),
-                    "current_task_idx": s_update.get("current_task_idx", full_state.get("current_task_idx", 0)),
-                    "current_attempt": s_update.get("current_attempt", full_state.get("current_attempt", 1)),
-                    "sandbox_results": full_state.get("sandbox_results", []),
-                    "final_output": s_update["final_output"] if "final_output" in s_update else full_state.get("final_output"),
-                    "next_route": s_update.get("next_route", full_state.get("next_route")),
-                }
-                update_queue.put(("update", node_name, safe_state, s_update))
-            update_queue.put(("done", None, None, None))
-        except Exception as exc:
-            update_queue.put(("error", exc, None, None))
-
-    t = threading.Thread(target=run_graph, daemon=True)
-    t.start()
-
-    try:
-        while True:
-            try:
-                msg = update_queue.get(timeout=30.0)
-                msg_type = msg[0]
-                if msg_type == "done":
-                    break
-                if msg_type == "error":
-                    raise msg[1]
-                _, node_name, state_data, node_update = msg
-                memory = TriGraphMemory.load()
-                yield {
-                    "step": node_name,
-                    "state_snapshot": state_data,
-                    "graphs": memory.to_dict(),
-                    "node_update": node_update,
-                }
-            except _queue.Empty:
-                memory = TriGraphMemory.load()
-                yield {
-                    "step": "keep-alive",
-                    "state_snapshot": {"messages": ["Waiting for tasks to complete..."]},
-                    "graphs": memory.to_dict(),
-                    "node_update": {},
-                }
-    except GeneratorExit:
-        stop_event.set()
-        t.join(timeout=5.0)
-
+    async for s in graph.astream(initial_state, config=config):
+        node_name = list(s.keys())[0]
+        s_update = s[node_name]
+        full_state = graph.get_state(config).values
+        safe_state = {
+            "user_prompt": full_state.get("user_prompt", user_prompt),
+            "messages": full_state.get("messages", []),
+            "dag": s_update.get("dag") if "dag" in s_update else full_state.get("dag"),
+            "intent": s_update.get("intent") if "intent" in s_update else full_state.get("intent"),
+            "codebase_context": s_update.get("codebase_context") if "codebase_context" in s_update else full_state.get("codebase_context", ""),
+            "current_task_idx": s_update.get("current_task_idx", full_state.get("current_task_idx", 0)),
+            "current_attempt": s_update.get("current_attempt", full_state.get("current_attempt", 1)),
+            "sandbox_results": full_state.get("sandbox_results", []),
+            "final_output": s_update.get("final_output") if "final_output" in s_update else full_state.get("final_output"),
+            "next_route": s_update.get("next_route", full_state.get("next_route")),
+            "task_difficulties": full_state.get("task_difficulties", {}),
+            "iteration_count": full_state.get("iteration_count", 0),
+        }
+        memory = TriGraphMemory.load()
+        yield {
+            "step": node_name,
+            "state_snapshot": safe_state,
+            "graphs": memory.to_dict(),
+            "node_update": s_update,
+        }
 
 
 def agent_loop(user_prompt: str) -> dict[str, Any]:
     """Run the full agent loop synchronously and return the final graph state."""
-    final_output = None
-    # Just run through the stream until the end
-    for update in agent_loop_stream(user_prompt):
-        if update["state_snapshot"].get("final_output"):
-            final_output = update["state_snapshot"]["final_output"]
+    import asyncio
+
+    async def _run():
+        final_output = None
+        async for update in agent_loop_stream(user_prompt):
+            if update["state_snapshot"].get("final_output"):
+                final_output = update["state_snapshot"]["final_output"]
+        return final_output
+
+    final_output = asyncio.run(_run())
 
     if final_output:
         return final_output
 
     memory = TriGraphMemory.load()
-    return {
-        "nodes": [],
-        "graphs": memory.to_dict()
-    }
+    return {"nodes": [], "graphs": memory.to_dict()}

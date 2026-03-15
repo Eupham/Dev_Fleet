@@ -1,6 +1,6 @@
 """Inference Engine — vLLM with GPU Memory Snapshots.
 
-Hosts Qwen/Qwen2.5-Coder-7B-Instruct behind an OpenAI-compatible API on
+Hosts Qwen/Qwen3-Coder-30B-A3B-Instruct behind an OpenAI-compatible API on
 a single A10G GPU.  Model weights are cached in Modal Volumes.
 GPU memory snapshots eliminate cold-start JIT compilation overhead so we
 never need to keep a GPU warm (scales to zero).
@@ -9,6 +9,13 @@ The ``Inference`` class exposes two interfaces:
   * ``@modal.web_server`` — external OpenAI-compatible HTTP endpoint.
   * ``@modal.method`` (``generate``) — Modal-native RPC used by the
     orchestrator, avoiding HTTP overhead and idle-timeout waste.
+
+Snapshot lifecycle (per Modal GPU snapshot docs):
+  snap=True  — start vLLM, warm it, call /sleep to offload weights to CPU
+               so the snapshot captures the sleeping server with weights in
+               CPU memory (preserves compiled CUDA graphs).
+  snap=False — call /wake_up to reload weights back to GPU, then wait ready.
+               No JIT recompilation because CUDA graphs survived the snapshot.
 """
 
 import socket
@@ -28,8 +35,8 @@ MINUTES = 60  # seconds
 VLLM_PORT = 8000
 N_GPU = 1
 
-MODEL_NAME = "Qwen/Qwen2.5-Coder-7B-Instruct"
-SERVED_MODEL_NAME = "llm"  # Qwen2.5-Coder-7B-Instruct
+MODEL_NAME = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+SERVED_MODEL_NAME = "llm"  # short alias for all orchestrator calls
 
 # ---------------------------------------------------------------------------
 # Container image — vLLM + HuggingFace tooling
@@ -54,7 +61,8 @@ vllm_image = (
     )
     .env(
         {
-            "VLLM_SERVER_DEV_MODE": "0",
+            # Enable /sleep and /wake_up endpoints for GPU snapshot support.
+            "VLLM_SERVER_DEV_MODE": "1",
             "TORCHINDUCTOR_COMPILE_THREADS": "1",
             # Required for snapshot survival without NCCL socket crashes
             "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
@@ -99,7 +107,7 @@ def _wait_ready(proc: subprocess.Popen) -> None:
 
 
 def _warmup() -> None:
-    """Run a few inference requests to capture CUDA graphs in the snapshot."""
+    """Run a few inference requests to capture CUDA graphs before snapshot."""
     payload = {
         "model": SERVED_MODEL_NAME,
         "messages": [{"role": "user", "content": "Say hello."}],
@@ -111,6 +119,39 @@ def _warmup() -> None:
             json=payload,
             timeout=300,
         ).raise_for_status()
+
+
+def _build_serve_cmd() -> list[str]:
+    """Build the vLLM serve command."""
+    return [
+        "vllm",
+        "serve",
+        MODEL_NAME,
+        "--served-model-name",
+        SERVED_MODEL_NAME,
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(VLLM_PORT),
+        "--uvicorn-log-level=warning",
+        "--tensor-parallel-size",
+        str(N_GPU),
+        "--gpu-memory-utilization",
+        "0.90",
+        # Disable CUDA-IPC custom allocator — shared-memory handles don't survive
+        # CRIU migration to a different physical node, causing CudaCheckpointException.
+        "--disable-custom-all-reduce",
+        # Enable sleep/wake_up endpoints (requires VLLM_SERVER_DEV_MODE=1)
+        "--enable-sleep-mode",
+        "--dtype=bfloat16",  # Ampere+ GPUs support bfloat16 natively
+        "--max-num-seqs",
+        "4",
+        "--max-model-len",
+        "8192",
+        "--max-num-batched-tokens",
+        "8192",
+        # MoE routing is handled automatically by vLLM 0.17.1 — no extra flags needed.
+    ]
 
 # ---------------------------------------------------------------------------
 # vLLM Server class with GPU memory snapshots (scales to zero)
@@ -131,62 +172,54 @@ def _warmup() -> None:
 )
 @modal.concurrent(max_inputs=100)
 class Inference:
-    """OpenAI-compatible vLLM server with GPU snapshot support."""
+    """OpenAI-compatible vLLM server with GPU snapshot support.
+
+    Snapshot lifecycle:
+      snap=True  — start vLLM, warm it, call /sleep to put weights in CPU
+                   memory before the snapshot is taken.
+      snap=False — call /wake_up to reload weights from CPU to GPU.
+                   CUDA graphs are preserved; no JIT recompilation needed.
+    """
 
     @modal.enter(snap=True)
     def start(self):
-        """Download model weights and compile kernels for snapshot."""
+        """Start vLLM, warm it, then put it to sleep for the snapshot."""
         import os as _os
-        # Blind PyTorch/NCCL to any ghost GPUs visible to cgroups on multi-GPU chassis;
-        # IPC handles for non-primary GPUs cannot survive a CRIU physical-node migration.
+        # Blind PyTorch/NCCL to any ghost GPUs visible to cgroups on multi-GPU chassis.
         _os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
-        # We don't start the vLLM server here anymore because TCPSockets
-        # for distributed backend cannot survive snapshots.
-        from huggingface_hub import snapshot_download
-        print(f"[dev_fleet] Downloading model weights for {MODEL_NAME} into snapshot...")
-        snapshot_download(MODEL_NAME)
-        print("[dev_fleet] Snapshot ready — capturing full GPU memory including weights.")
-
-    @modal.enter(snap=False)
-    def restore(self):
-        """Start the server process after container thaws from snapshot."""
-        import os as _os
-        _os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-        cmd = [
-            "vllm",
-            "serve",
-            MODEL_NAME,
-            "--served-model-name",
-            SERVED_MODEL_NAME,
-            "--host",
-            "0.0.0.0",
-            "--port",
-            str(VLLM_PORT),
-            "--uvicorn-log-level=warning",
-            "--tensor-parallel-size",
-            str(N_GPU),
-            "--gpu-memory-utilization",
-            "0.90",
-            # Disable CUDA-IPC custom allocator — shared-memory handles don't survive
-            # CRIU migration to a different physical node, causing CudaCheckpointException.
-            "--disable-custom-all-reduce",
-            # Snapshot-specific flags
-            "--enforce-eager",
-            "--dtype=bfloat16",  # Ampere+ GPUs support bfloat16 natively
-            "--max-num-seqs",
-            "4",
-            "--max-model-len",
-            "8192",
-            "--max-num-batched-tokens",
-            "8192",
-        ]
-
-        print("[dev_fleet] Starting vLLM:", " ".join(cmd))
+        cmd = _build_serve_cmd()
+        print("[dev_fleet] Starting vLLM for snapshot:", " ".join(cmd))
         self.proc = subprocess.Popen(cmd)
         _wait_ready(self.proc)
         _warmup()
-        print("[dev_fleet] Restored from snapshot — server live.")
+
+        # Put vLLM to sleep: offload weights to CPU memory so the snapshot
+        # captures them. CUDA graphs are preserved across the sleep boundary.
+        print("[dev_fleet] Putting vLLM to sleep (level=1) for snapshot capture...")
+        resp = requests.post(
+            f"http://localhost:{VLLM_PORT}/sleep?level=1",
+            timeout=120,
+        )
+        resp.raise_for_status()
+        print("[dev_fleet] vLLM sleeping — snapshot will capture CPU-side weights + CUDA graphs.")
+
+    @modal.enter(snap=False)
+    def restore(self):
+        """Wake up the sleeping vLLM server after container thaws from snapshot."""
+        import os as _os
+        _os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+        # The snapshot contains a sleeping vLLM subprocess. Wake it up —
+        # weights reload from CPU to GPU, CUDA graphs resume. No JIT needed.
+        print("[dev_fleet] Waking vLLM from snapshot...")
+        resp = requests.post(
+            f"http://localhost:{VLLM_PORT}/wake_up",
+            timeout=120,
+        )
+        resp.raise_for_status()
+        _wait_ready(self.proc)
+        print("[dev_fleet] Restored from snapshot — server live, no JIT compilation.")
 
     @modal.method()
     def generate(

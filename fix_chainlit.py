@@ -1,25 +1,50 @@
-"""
-Patch Chainlit's load_user_env to handle missing userEnv gracefully.
+"""Runtime monkey-patch for Chainlit's load_user_env.
 
 In some Chainlit 2.x versions, load_user_env raises UnboundLocalError when
 the browser sends userEnv: null (i.e. when CHAINLIT_USER_ENV is not set).
-This script patches socket.py at image build time to return {} in that case.
+This module patches the function at runtime to return {} in that case.
+
+Import this module early in your application (before chainlit is used) to apply the patch.
 """
-import pathlib
 
-TARGET = pathlib.Path('/usr/local/lib/python3.12/site-packages/chainlit/socket.py')
+import sys
 
-if not TARGET.exists():
-    print(f"[fix_chainlit] {TARGET} not found — skipping")
-else:
-    src = TARGET.read_text()
-    patched = src.replace(
-        '    return user_env_dict\n',
-        '    return user_env_dict if "user_env_dict" in locals() else {}\n',
-        1,
-    )
-    if patched != src:
-        TARGET.write_text(patched)
-        print("[fix_chainlit] Patched load_user_env OK")
-    else:
-        print("[fix_chainlit] Pattern not found — already fixed or unexpected version")
+
+def apply_patch() -> None:
+    """Patch chainlit.socket.load_user_env to handle missing userEnv gracefully."""
+    try:
+        import importlib
+        import chainlit.socket as _socket_module
+
+        src = None
+        # Try to get the source file path for the build-time approach
+        import inspect
+        try:
+            src_file = inspect.getfile(_socket_module)
+        except (TypeError, OSError):
+            src_file = None
+
+        # Runtime monkey-patch: wrap load_user_env to never raise UnboundLocalError
+        original_fn = getattr(_socket_module, "load_user_env", None)
+        if original_fn is None:
+            return
+
+        def _safe_load_user_env(*args, **kwargs):
+            try:
+                result = original_fn(*args, **kwargs)
+                return result if result is not None else {}
+            except (UnboundLocalError, AttributeError, KeyError):
+                return {}
+
+        _socket_module.load_user_env = _safe_load_user_env
+        print("[fix_chainlit] Runtime monkey-patch applied to load_user_env OK")
+
+    except ImportError:
+        # Chainlit not installed — nothing to patch
+        pass
+    except Exception as exc:
+        print(f"[fix_chainlit] Patch failed ({exc}) — continuing anyway", file=sys.stderr)
+
+
+# Apply patch immediately when this module is imported
+apply_patch()
