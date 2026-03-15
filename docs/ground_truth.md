@@ -10,7 +10,7 @@ via Modal-native RPC (`.remote()`):
 
 | Container | Role | Model | Resource | File |
 |-----------|------|-------|----------|------|
-| **Inference** | OpenAI-compatible vLLM server | `Qwen/Qwen3-Coder-30B-A3B-Instruct` | 1× A10G | `inference/server.py` |
+| **Inference** | OpenAI-compatible vLLM server | `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4` | 1× L40S | `inference/server.py` |
 | **Reranker** | Cross-encoder edge scoring | `Qwen/Qwen3-Reranker-0.6B` | CPU | `inference/reranker.py` |
 | **Orchestrator** | Tri-Graph agent + sandboxed execution | — | CPU | `orchestrator/core_app.py` |
 
@@ -48,9 +48,11 @@ via Modal-native RPC (`.remote()`):
   required for the sleep/wake snapshot pattern to be efficient.
 - `TORCHINDUCTOR_COMPILE_THREADS=1` for snapshot compatibility.
 - Served model alias `"llm"` so clients use a short name.
-- **MoE model**: Qwen3-Coder-30B-A3B-Instruct has 30B total params, 3B active
-  per forward pass. Fits on A10G in BF16. Faster than dense 7B model.
-  vLLM 0.17.1 handles MoE routing automatically — no extra flags needed.
+- **MoE model**: Qwen3.5-35B-A3B-GPTQ-Int4 has 35B total params, 3B active
+  per forward pass. Fits on L40S (48 GB) with GPTQ-Int4 quantization (~17.5 GB weights).
+  Requires vLLM nightly for `Qwen3_5MoeForConditionalGeneration` arch support.
+  Use `--quantization moe_wna16` (not gptq/awq_marlin) and `--language-model-only`
+  to skip the vision encoder and maximise KV cache budget.
 
 ## Reranker Pattern
 
@@ -100,8 +102,8 @@ See `orchestrator/difficulty.py` for `compute_base_difficulty()` and
 |------|-------|--------|-----|
 | trivial | Qwen3-4B | 4B dense | T4 |
 | simple | Qwen3-8B | 8B dense | T4 |
-| moderate | Qwen3-Coder-30B-A3B-Instruct | 3B active | A10G |
-| complex | Qwen3-Coder-30B-A3B-Instruct | 3B active | A10G |
+| moderate | Qwen3.5-35B-A3B-GPTQ-Int4 | 3B active | L40S |
+| complex | Qwen3.5-35B-A3B-GPTQ-Int4 | 3B active | L40S |
 | expert | Qwen3-32B | 32B dense | A100-80GB |
 
 All models ≤80B total parameters. Qwen3-32B fits on a single A100-80GB in BF16 (~64GB VRAM).
@@ -136,7 +138,7 @@ modal run app.py --prompt "Write a hello world function"
 
 | Package | Purpose | Pinned Version |
 |---------|---------|----------------|
-| `vllm` | LLM inference engine | `0.17.1` |
+| `vllm` | LLM inference engine | nightly (pin after confirming) |
 | `huggingface_hub` | Model download | latest |
 | `transformers` | Qwen3-Reranker model loading | `>=4.51.0` |
 | `torch` | Reranker inference | `>=2.0` |

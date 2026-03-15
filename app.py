@@ -20,7 +20,7 @@ from fleet_app import app
 # Register all functions / classes by importing their modules.
 # Each module does ``from app import app`` and decorates its own
 # functions/classes with the shared ``app`` object.
-import inference.server  # noqa: E402 — registers Inference (moderate/complex tier, A10G)
+import inference.server  # noqa: E402 — registers Inference (moderate/complex tier, L40S)
 import inference.reranker  # noqa: E402 — registers Reranker class
 import inference.embedder  # noqa: E402 — registers Embedder class
 import inference.model_pool  # noqa: E402 — registers InferenceSmall/Medium/Large
