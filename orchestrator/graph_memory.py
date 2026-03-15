@@ -273,12 +273,22 @@ class TriGraphMemory:
 
     # -- Semantic helpers ----------------------------------------------------
 
-    def add_semantic_node(
-        self, node_id: str, attrs: dict[str, Any]
-    ) -> None:
-        self.semantic.add_node(node_id, **attrs)
-        # Also ingest into property graph
-        self._ingest_node_to_pg(node_id, attrs, "semantic")
+    def add_semantic_node(self, node_id: str, attrs: dict[str, Any]) -> None:
+        """Add a typed semantic node. Validates against SemanticNode schemas.
+        Falls back to untyped insertion on ValidationError so the indexer
+        does not break on nodes that predate the typed schema.
+        """
+        try:
+            from orchestrator.node_schemas import SemanticNode
+            from pydantic import TypeAdapter
+            adapter = TypeAdapter(SemanticNode)
+            validated = adapter.validate_python({**attrs, "node_id": node_id})
+            self.semantic.add_node(node_id, **validated.model_dump())
+        except Exception:
+            self.semantic.add_node(node_id, **attrs)
+        self._ingest_node_to_pg(
+            node_id, dict(self.semantic.nodes[node_id]), "semantic"
+        )
 
     def add_semantic_edge(
         self, src: str, dst: str, attrs: dict[str, Any] | None = None
@@ -289,12 +299,19 @@ class TriGraphMemory:
 
     # -- Procedural helpers --------------------------------------------------
 
-    def add_procedural_node(
-        self, node_id: str, attrs: dict[str, Any]
-    ) -> None:
-        self.procedural.add_node(node_id, **attrs)
-        # Also ingest into property graph
-        self._ingest_node_to_pg(node_id, attrs, "procedural")
+    def add_procedural_node(self, node_id: str, attrs: dict[str, Any]) -> None:
+        """Add a typed procedural node. Falls back to untyped on ValidationError."""
+        try:
+            from orchestrator.node_schemas import ProceduralNode
+            from pydantic import TypeAdapter
+            adapter = TypeAdapter(ProceduralNode)
+            validated = adapter.validate_python({**attrs, "node_id": node_id})
+            self.procedural.add_node(node_id, **validated.model_dump())
+        except Exception:
+            self.procedural.add_node(node_id, **attrs)
+        self._ingest_node_to_pg(
+            node_id, dict(self.procedural.nodes[node_id]), "procedural"
+        )
 
     def add_procedural_edge(
         self, src: str, dst: str, attrs: dict[str, Any] | None = None
@@ -462,10 +479,27 @@ class TriGraphMemory:
 
                 if target_graph == "semantic" and target in self.semantic:
                     target_attrs = dict(self.semantic.nodes[target])
-                    parts.append(f"[Semantic] {target}: {json.dumps(target_attrs, default=str)}")
+                    frame = target_attrs.get("frame_name", "Semantic")
+                    concept_type = target_attrs.get("concept_type", "")
+                    content = target_attrs.get(
+                        "content", target_attrs.get("description", str(target))
+                    )
+                    frame_label = f"{frame}({concept_type})" if concept_type else frame
+                    parts.append(f"[{frame_label}] {target}: {content}")
                 elif target_graph == "procedural" and target in self.procedural:
                     target_attrs = dict(self.procedural.nodes[target])
-                    parts.append(f"[Procedural] {target}: {json.dumps(target_attrs, default=str)}")
+                    frame = target_attrs.get("frame_name", "Procedural")
+                    actor = target_attrs.get("actor_capability", "")
+                    depth = target_attrs.get("implementation_depth", "")
+                    cost = target_attrs.get("execution_cost", "")
+                    content = target_attrs.get(
+                        "content", target_attrs.get("description", str(target))
+                    )
+                    detail = " / ".join(x for x in [actor, depth, cost] if x)
+                    parts.append(
+                        f"[{frame}({detail})] {target}: {content}" if detail
+                        else f"[{frame}] {target}: {content}"
+                    )
 
         return "\n".join(parts) if parts else "(no context)"
 

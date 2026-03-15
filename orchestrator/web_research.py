@@ -1,10 +1,15 @@
-"""Web Research Node — online research via sandbox execution.
+# orchestrator/web_research.py
+"""Web research node — fetches URLs and indexes content into knowledge graphs.
 
-The agent has internet access through the Modal Sandbox (curl, wget, requests, httpx
-are all available). This node generates and executes a research script, then returns
-parsed results as context for the decomposition step.
+Replaces the LLM-script-generation pattern. Takes a list of URLs derived
+from the user prompt (extracted by the supervisor or a lightweight LLM call),
+fetches them via document_fetcher, extracts typed nodes via extractor, and
+inserts them into the knowledge graph. The graph persists — research is
+cumulative, not ephemeral.
+
+The codebase_context returned is a compact summary of what was indexed,
+not a raw text dump.
 """
-
 from __future__ import annotations
 
 import logging
@@ -15,78 +20,116 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("dev_fleet.web_research")
 
-_RESEARCH_SYSTEM = """You are a web research assistant. Given a topic or question, write a Python script
-that:
-1. Uses requests or httpx to fetch relevant web pages or APIs
-2. Parses the results (use BeautifulSoup for HTML, json for APIs)
-3. Prints a structured summary of findings to stdout
 
-Rules:
-- Use only: requests, httpx, beautifulsoup4, json (all available in the sandbox)
-- Handle errors gracefully with try/except
-- Print findings in a clear, structured format
-- Keep the script under 100 lines
-- Do NOT use selenium or playwright (not available)
+def _extract_urls_from_prompt(prompt: str) -> list[str]:
+    """Extract explicit URLs from the user prompt.
 
-Output ONLY the Python script, no explanations."""
+    For prompts that contain URLs directly (e.g. "summarize https://...")
+    these are extracted by regex. If no URLs are present, a lightweight
+    LLM call generates search-friendly URLs from the prompt topic.
+    """
+    import re
+    explicit = re.findall(r"https?://[^\s\"'<>]+", prompt)
+    if explicit:
+        return explicit[:10]
+
+    # No explicit URLs — ask LLM for 3 relevant authoritative URLs
+    try:
+        from orchestrator.llm_client import chat_completion
+        result = chat_completion(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Return exactly 3 URLs of authoritative documentation or "
+                        "specification pages relevant to this topic. "
+                        "One URL per line. Only URLs, nothing else."
+                    ),
+                },
+                {"role": "user", "content": prompt[:500]},
+            ],
+            temperature=0.0,
+            max_tokens=200,
+        )
+        lines = str(result).strip().splitlines()
+        return [l.strip() for l in lines if l.strip().startswith("http")][:3]
+    except Exception:
+        return []
 
 
 def research_node(state: "AgentState") -> dict:
-    """Execute web research and return findings as context.
+    """Fetch URLs, extract typed nodes, index into knowledge graph.
 
-    Generates a Python research script, runs it in the sandbox, and
-    returns the stdout as research context for the decompose step.
+    Returns codebase_context as a summary of indexed content.
+    Research results are permanent — nodes survive across sessions.
     """
-    logger.info("Research node: conducting web research...")
-    from orchestrator.llm_client import chat_completion
-    from orchestrator.tool_sandbox import ModalSandboxTool
-    import re
+    from orchestrator.document_fetcher import crawl_urls
+    from orchestrator.extractor import extract_from_artifact
+    from orchestrator.graph_memory import TriGraphMemory
+    from orchestrator.node_schemas import SemanticNode, ProceduralNode
+    from pydantic import TypeAdapter, ValidationError
 
-    user_prompt = state["user_prompt"]
+    prompt = state["user_prompt"]
+    urls = _extract_urls_from_prompt(prompt)
 
-    # Generate research script
-    messages = [
-        {"role": "system", "content": _RESEARCH_SYSTEM},
-        {"role": "user", "content": f"Research topic: {user_prompt}"},
-    ]
+    if not urls:
+        logger.info("Research node: no URLs found for prompt.")
+        return {
+            "codebase_context": "[Research: no URLs identified for this prompt]",
+            "messages": ["[RESEARCH] No URLs to fetch."],
+        }
 
-    research_results = "(no research results)"
-    try:
-        script_text = chat_completion(messages, temperature=0.3, max_tokens=2048)
+    logger.info("Research node: fetching %d URLs.", len(urls))
+    docs = crawl_urls(urls, depth=1, same_domain_only=True, max_pages=20)
 
-        # Extract code block if wrapped in markdown
-        match = re.search(r"```python\n(.*?)\n```", script_text, re.DOTALL)
-        if match:
-            script = match.group(1)
-        else:
-            script = script_text.strip()
+    memory = TriGraphMemory.load()
+    sem_adapter = TypeAdapter(SemanticNode)
+    proc_adapter = TypeAdapter(ProceduralNode)
+    sem_count = proc_count = 0
+    indexed_titles: list[str] = []
 
-        # Execute in sandbox
-        tool = ModalSandboxTool()
-        result = tool.forward(code=script, language="python", timeout=120)
+    for doc in docs:
+        if not doc.content or doc.error:
+            continue
+        node_dicts = extract_from_artifact(
+            doc.content,
+            filename=doc.url,
+            content_hint=doc.content_type,
+        )
+        for nd in node_dicts:
+            graph_type = nd.get("graph_type", "")
+            node_id = nd.get("node_id", "")
+            if not node_id:
+                continue
+            if graph_type == "semantic":
+                try:
+                    v = sem_adapter.validate_python(nd)
+                    if v.node_id not in memory.semantic:
+                        memory.add_semantic_node(v.node_id, v.model_dump())
+                        sem_count += 1
+                except (ValidationError, Exception):
+                    pass
+            elif graph_type == "procedural":
+                try:
+                    v = proc_adapter.validate_python(nd)
+                    if v.node_id not in memory.procedural:
+                        memory.add_procedural_node(v.node_id, v.model_dump())
+                        proc_count += 1
+                except (ValidationError, Exception):
+                    pass
 
-        stdout = result.get("stdout", "").strip()
-        stderr = result.get("stderr", "").strip()
-        exit_code = result.get("exit_code", 1)
+        if doc.title:
+            indexed_titles.append(doc.title)
 
-        if stdout:
-            research_results = stdout[:4000]
-            logger.info("Research completed: %d bytes of results", len(stdout))
-        elif stderr:
-            research_results = f"[Research error] {stderr[:1000]}"
-            logger.warning("Research script produced errors: %s", stderr[:200])
-        else:
-            research_results = "[Research script produced no output]"
+    memory.save()
 
-    except Exception as exc:
-        logger.warning("Research node failed (%s) — proceeding without results.", exc)
-        research_results = f"[Research failed: {exc}]"
-
-    research_context = f"=== WEB RESEARCH RESULTS ===\n{research_results}\n=== END RESEARCH ==="
+    summary_lines = [
+        f"Indexed {sem_count} semantic nodes, {proc_count} procedural nodes",
+        f"from {len(docs)} pages:",
+    ] + [f"  - {t}" for t in indexed_titles[:10]]
+    summary = "\n".join(summary_lines)
 
     return {
-        "codebase_context": (
-            (state.get("codebase_context", "") + "\n\n" + research_context).strip()
-        ),
-        "messages": [f"[RESEARCH] Completed web research ({len(research_results)} chars of findings)."],
+        "codebase_context": summary,
+        "messages": [f"[RESEARCH] {summary.splitlines()[0]}"],
     }

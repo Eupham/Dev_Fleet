@@ -1,13 +1,51 @@
-import ast
+# orchestrator/indexer.py
+"""Codebase indexer — builds knowledge graphs from the local workspace.
+
+Routes all file extraction through orchestrator/extractor.py so that
+the indexer and onboard_domain share a single pipeline. Output is typed
+node dicts validated against node_schemas.py before insertion.
+
+Respects .gitignore via pathspec.
+"""
+from __future__ import annotations
+
 import os
+import logging
+from pathlib import Path
+
 import pathspec
-from llama_index.core.node_parser import SentenceSplitter
+from pydantic import TypeAdapter, ValidationError
+
+from orchestrator.extractor import extract_from_artifact
 from orchestrator.graph_memory import TriGraphMemory
+from orchestrator.node_schemas import SemanticNode, ProceduralNode
 
-def build_knowledge_graphs(workspace_dir: str):
+logger = logging.getLogger("dev_fleet.indexer")
+
+_SEM_ADAPTER = TypeAdapter(SemanticNode)
+_PROC_ADAPTER = TypeAdapter(ProceduralNode)
+
+# File extensions routed to the extractor
+_CODE_SUFFIXES = frozenset({".py", ".js", ".ts", ".jsx", ".tsx"})
+_PROSE_SUFFIXES = frozenset({".md", ".rst", ".txt", ".sh"})
+_SKIP_SUFFIXES = frozenset({
+    ".pyc", ".pyo", ".so", ".egg", ".whl",
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+    ".zip", ".tar", ".gz", ".bz2",
+    ".lock", ".sum",
+})
+
+
+def build_knowledge_graphs(workspace_dir: str) -> dict:
+    """Index workspace_dir and insert typed nodes into the knowledge graphs.
+
+    Returns:
+        dict: semantic_nodes_added, procedural_nodes_added, files_processed
+    """
     memory = TriGraphMemory.load()
+    sem_count = proc_count = files = 0
 
-    # Parse .gitignore
+    # Load .gitignore if present
     gitignore_path = os.path.join(workspace_dir, ".gitignore")
     ignore_spec = None
     if os.path.exists(gitignore_path):
@@ -16,64 +54,70 @@ def build_knowledge_graphs(workspace_dir: str):
                 pathspec.patterns.GitWildMatchPattern, f
             )
 
-    splitter = SentenceSplitter(chunk_size=1024, chunk_overlap=128)
+    for root, dirs, filenames in os.walk(workspace_dir):
+        # Prune ignored directories in-place
+        if ignore_spec:
+            rel_root = os.path.relpath(root, workspace_dir)
+            dirs[:] = [
+                d for d in dirs
+                if not ignore_spec.match_file(
+                    os.path.join(rel_root, d) + "/"
+                )
+            ]
 
-    for root, dirs, files in os.walk(workspace_dir):
-        for file in files:
-            file_path = os.path.join(root, file)
-            rel_path = os.path.relpath(file_path, workspace_dir)
+        for filename in filenames:
+            filepath = os.path.join(root, filename)
+            rel_path = os.path.relpath(filepath, workspace_dir)
+            suffix = Path(filename).suffix.lower()
 
+            if suffix in _SKIP_SUFFIXES:
+                continue
             if ignore_spec and ignore_spec.match_file(rel_path):
                 continue
-
-            # Check if directory should be ignored
-            # Pathspec expects directories to have a trailing slash, or we check prefixes
-            rel_dir = os.path.relpath(root, workspace_dir)
-            if ignore_spec and rel_dir != "." and ignore_spec.match_file(rel_dir + "/"):
-                # We should have pruned dirs, but os.walk continues unless we modify `dirs` in place.
-                # So we can just skip file processing here.
+            if suffix not in _CODE_SUFFIXES and suffix not in _PROSE_SUFFIXES:
                 continue
 
             try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    file_content = f.read()
-            except Exception:
-                continue  # skip unreadable or binary files
+                with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                    source = f.read()
+            except Exception as exc:
+                logger.debug("Cannot read %s: %s", rel_path, exc)
+                continue
 
-            if file_path.endswith(".py"):
-                # Semantic Graph
-                try:
-                    tree = ast.parse(file_content)
-                except SyntaxError:
+            node_dicts = extract_from_artifact(source, rel_path)
+            for node_dict in node_dicts:
+                graph_type = node_dict.get("graph_type", "")
+                node_id = node_dict.get("node_id", "")
+                if not node_id:
                     continue
+                if graph_type == "semantic":
+                    try:
+                        validated = _SEM_ADAPTER.validate_python(node_dict)
+                        if validated.node_id not in memory.semantic:
+                            memory.add_semantic_node(
+                                validated.node_id, validated.model_dump()
+                            )
+                            sem_count += 1
+                    except (ValidationError, Exception):
+                        pass
+                elif graph_type == "procedural":
+                    try:
+                        validated = _PROC_ADAPTER.validate_python(node_dict)
+                        if validated.node_id not in memory.procedural:
+                            memory.add_procedural_node(
+                                validated.node_id, validated.model_dump()
+                            )
+                            proc_count += 1
+                    except (ValidationError, Exception):
+                        pass
 
-                memory.add_semantic_node(rel_path, {"type": "File"})
-
-                for node in ast.walk(tree):
-                    if isinstance(node, (ast.ClassDef, ast.FunctionDef)):
-                        docstring = ast.get_docstring(node) or ""
-                        node_id = f"{rel_path}::{node.name}"
-
-                        memory.add_semantic_node(node_id, {
-                            "type": type(node).__name__,
-                            "name": node.name,
-                            "docstring": docstring,
-                            "lineno": node.lineno
-                        })
-                        memory.add_semantic_edge(rel_path, node_id, {"relation": "defines"})
-
-            elif file_path.endswith((".md", ".sh", ".txt")):
-                # Procedural Graph
-                chunks = splitter.split_text(file_content)
-                for i, chunk in enumerate(chunks):
-                    node_id = f"{rel_path}_chunk_{i}"
-                    memory.add_procedural_node(node_id, {
-                        "type": "Chunk",
-                        "content": chunk
-                    })
-
-                    if i > 0:
-                        prev_node_id = f"{rel_path}_chunk_{i-1}"
-                        memory.add_procedural_edge(prev_node_id, node_id, {"relation": "leads_to"})
+            files += 1
 
     memory.save()
+    result = {
+        "semantic_nodes_added": sem_count,
+        "procedural_nodes_added": proc_count,
+        "files_processed": files,
+    }
+    logger.info("Indexer: %s", result)
+    return result

@@ -46,6 +46,13 @@ orchestrator_image = (
         "llama-index>=0.10.0",
         "llama-index-embeddings-huggingface>=0.1.0",
         "langgraph>=0.0.10",
+        "radon>=6.0",                   # cyclomatic complexity signal
+        "tree-sitter>=0.23",            # non-Python code extraction
+        "tree-sitter-javascript>=0.23", # JS/TS grammar
+        "markdown-it-py>=3.0",          # structured prose extraction
+        "beautifulsoup4>=4.12",         # HTML stripping for web content
+        "trafilatura>=1.12",            # HTML/web extraction
+        "pymupdf>=1.24",                # PDF extraction
     )
 )
 
@@ -155,4 +162,183 @@ def run_agent(user_prompt: str) -> dict:
     result = agent_loop(user_prompt)
 
     log_event("agent_complete", {"nodes": len(result.get("nodes", []))})
+    return result
+
+
+@app.function(
+    image=orchestrator_image,
+    volumes={"/state": graph_state_vol},
+    timeout=10 * 60,
+)
+def onboard_domain(
+    domain_name: str,
+    artifacts: list[str],
+    artifact_filenames: list[str] | None = None,
+    force: bool = False,
+) -> dict:
+    """Seed knowledge graphs for a domain from provided artifact texts.
+
+    Extraction is static-first via extractor.py. For code artifacts,
+    ast (Python) or tree-sitter (JS/TS) produce typed nodes directly.
+    The LLM is called only for missing docstrings, ambiguous concept_type
+    classifications, and ConstraintNode fields from prose.
+
+    Args:
+        domain_name:        Short identifier, e.g. "trading_dsl"
+        artifacts:          List of raw text strings.
+        artifact_filenames: Optional filenames (same order as artifacts).
+                            Used by the extractor to choose the right
+                            parser. Defaults to "artifact_N.txt".
+        force:              Re-run even if domain was previously onboarded.
+
+    Returns:
+        dict: domain, semantic_nodes_added, procedural_nodes_added
+    """
+    import json as _json
+    from pathlib import Path
+    from orchestrator.graph_memory import TriGraphMemory
+    from orchestrator.extractor import extract_from_artifact
+    from orchestrator.node_schemas import SemanticNode, ProceduralNode
+    from pydantic import TypeAdapter, ValidationError
+
+    profile_path = Path("/state/domain_profiles") / f"{domain_name}.json"
+    if profile_path.exists() and not force:
+        log_event("domain_already_onboarded", {"domain": domain_name})
+        return _json.loads(profile_path.read_text())
+
+    filenames = artifact_filenames or [
+        f"artifact_{i}.txt" for i in range(len(artifacts))
+    ]
+    memory = TriGraphMemory.load()
+    sem_count = proc_count = 0
+    sem_adapter = TypeAdapter(SemanticNode)
+    proc_adapter = TypeAdapter(ProceduralNode)
+
+    for text, filename in zip(artifacts, filenames):
+        nodes = extract_from_artifact(text, filename)
+        for node_dict in nodes:
+            graph_type = node_dict.get("graph_type", "")
+            if not node_dict.get("node_id"):
+                continue
+            if graph_type == "semantic":
+                try:
+                    validated = sem_adapter.validate_python(node_dict)
+                    if validated.node_id not in memory.semantic:
+                        memory.add_semantic_node(
+                            validated.node_id, validated.model_dump()
+                        )
+                        sem_count += 1
+                except (ValidationError, Exception):
+                    pass
+            elif graph_type == "procedural":
+                try:
+                    validated = proc_adapter.validate_python(node_dict)
+                    if validated.node_id not in memory.procedural:
+                        memory.add_procedural_node(
+                            validated.node_id, validated.model_dump()
+                        )
+                        proc_count += 1
+                except (ValidationError, Exception):
+                    pass
+
+    memory.save()
+
+    result = {
+        "domain": domain_name,
+        "semantic_nodes_added": sem_count,
+        "procedural_nodes_added": proc_count,
+    }
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
+    profile_path.write_text(_json.dumps(result, indent=2))
+    log_event("domain_onboarded", result)
+    return result
+
+
+@app.function(
+    image=orchestrator_image,
+    volumes={"/state": graph_state_vol},
+    timeout=15 * 60,
+)
+def onboard_from_urls(
+    domain_name: str,
+    urls: list[str],
+    depth: int = 1,
+    same_domain_only: bool = True,
+    force: bool = False,
+) -> dict:
+    """Fetch URLs and index their content into the knowledge graph.
+
+    Crawls seed_urls to the specified depth, extracts typed nodes via
+    extractor.py, and inserts them into the semantic and procedural graphs.
+
+    Args:
+        domain_name:      Short identifier for the domain being indexed.
+        urls:             Seed URLs to fetch.
+        depth:            Link-follow depth. 0 = seeds only, 1 = seeds + links.
+        same_domain_only: Only follow links on the same domain as seeds.
+        force:            Re-index even if domain profile exists.
+
+    Returns:
+        dict: domain, pages_fetched, semantic_nodes_added, procedural_nodes_added
+    """
+    import json as _json
+    from pathlib import Path
+    from orchestrator.document_fetcher import crawl_urls
+    from orchestrator.extractor import extract_from_artifact
+    from orchestrator.graph_memory import TriGraphMemory
+    from orchestrator.node_schemas import SemanticNode, ProceduralNode
+    from pydantic import TypeAdapter, ValidationError
+
+    profile_path = Path("/state/domain_profiles") / f"{domain_name}_urls.json"
+    if profile_path.exists() and not force:
+        log_event("domain_urls_already_indexed", {"domain": domain_name})
+        return _json.loads(profile_path.read_text())
+
+    docs = crawl_urls(urls, depth=depth, same_domain_only=same_domain_only,
+                      max_pages=100)
+    memory = TriGraphMemory.load()
+    sem_adapter = TypeAdapter(SemanticNode)
+    proc_adapter = TypeAdapter(ProceduralNode)
+    sem_count = proc_count = 0
+
+    for doc in docs:
+        if not doc.content or doc.error:
+            continue
+        node_dicts = extract_from_artifact(
+            doc.content,
+            filename=doc.url,
+            content_hint=doc.content_type,
+        )
+        for nd in node_dicts:
+            graph_type = nd.get("graph_type", "")
+            node_id = nd.get("node_id", "")
+            if not node_id:
+                continue
+            if graph_type == "semantic":
+                try:
+                    v = sem_adapter.validate_python(nd)
+                    if v.node_id not in memory.semantic:
+                        memory.add_semantic_node(v.node_id, v.model_dump())
+                        sem_count += 1
+                except (ValidationError, Exception):
+                    pass
+            elif graph_type == "procedural":
+                try:
+                    v = proc_adapter.validate_python(nd)
+                    if v.node_id not in memory.procedural:
+                        memory.add_procedural_node(v.node_id, v.model_dump())
+                        proc_count += 1
+                except (ValidationError, Exception):
+                    pass
+
+    memory.save()
+    result = {
+        "domain": domain_name,
+        "pages_fetched": len(docs),
+        "semantic_nodes_added": sem_count,
+        "procedural_nodes_added": proc_count,
+    }
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
+    profile_path.write_text(_json.dumps(result, indent=2))
+    log_event("domain_urls_indexed", result)
     return result

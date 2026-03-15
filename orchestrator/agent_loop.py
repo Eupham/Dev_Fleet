@@ -29,7 +29,10 @@ warnings.filterwarnings(
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 
-from orchestrator.frege_parser import AtomicTaskNode, TaskDAG, parse_prompt
+from orchestrator.task_parser import (
+    AtomicTaskNode, TaskDAG, parse_prompt,
+    TransformTask, QueryTask, VerifyTask, ComposeTask,
+)
 from orchestrator.graph_memory import TriGraphMemory
 from orchestrator.llm_client import generate, chat_completion
 from orchestrator.rerank_engine import rerank_candidates, ScoredEdge
@@ -65,6 +68,12 @@ class AgentState(TypedDict):
     task_difficulties: dict
     # Outer iteration counter for validation loop
     iteration_count: int
+    # DRS serialized — empty dict = empty scope
+    discourse_state: dict
+    # DRS for active retry scope — empty dict when none
+    retry_discourse_state: dict
+    # for execution phase determination
+    tasks_completed_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -94,51 +103,67 @@ def decompose_node(state: AgentState) -> dict:
 
 
 def rerank_and_retrieve_node(state: AgentState) -> dict:
-    """Score task edges against semantic/procedural graphs via Retrieve-then-Rerank.
-
-    Also computes per-task difficulty from reranker scores + graph topology.
-    Difficulty is stored in state for model routing in execute_node.
-    """
+    """Score tasks against knowledge graphs. Phase-aware difficulty. DRS augmentation."""
     logger.info("Executing Rerank_and_Retrieve node...")
     try:
+        from orchestrator.discourse import DRS
+        from orchestrator.phase_priors import (
+            execution_phase, prior_difficulty,
+        )
+        from orchestrator.difficulty import compression_ratio
+        from orchestrator.composition import merge_declared_edges
+
         memory = TriGraphMemory.load()
         dag = state["dag"]
+
+        drs_dict = state.get("discourse_state") or {}
+        drs = DRS.from_dict(drs_dict) if drs_dict else DRS()
 
         pg_has_nodes = (
             memory.semantic.number_of_nodes() > 0
             or memory.procedural.number_of_nodes() > 0
         )
 
-        # Collect all reranker edges for difficulty computation
         all_reranker_edges: list[ScoredEdge] = []
+        phase = execution_phase(state.get("tasks_completed_count", 0))
 
         if dag and pg_has_nodes:
             for task in dag.get("tasks", []):
+                raw_desc = task.get("description", "")
+                augmented_desc = drs.augment_description(raw_desc)
+
                 try:
-                    retriever = memory._ensure_property_graph().as_retriever(similarity_top_k=15)
-                    retrieved_nodes = retriever.retrieve(task.get("description", ""))
+                    retriever = memory._ensure_property_graph().as_retriever(
+                        similarity_top_k=15
+                    )
+                    retrieved_nodes = retriever.retrieve(augmented_desc)
                 except Exception as retrieval_exc:
-                    logger.warning("Retrieval failed for task %s (%s) — skipping.", task.get("id"), retrieval_exc)
+                    logger.warning(
+                        "Retrieval failed for task %s (%s).",
+                        task.get("id"), retrieval_exc,
+                    )
                     continue
 
-                candidates = []
-                for node in retrieved_nodes:
-                    node_id = node.metadata.get("node_id")
-                    graph_type = node.metadata.get("graph_type")
-                    if node_id:
-                        candidates.append({
-                            "id": node_id,
-                            "graph": graph_type or "unknown",
-                            "description": node.text,
-                        })
+                candidates = [
+                    {
+                        "id": node.metadata.get("node_id"),
+                        "graph": node.metadata.get("graph_type", "unknown"),
+                        "description": node.text,
+                    }
+                    for node in retrieved_nodes
+                    if node.metadata.get("node_id")
+                ]
 
                 if candidates:
                     try:
-                        edges = rerank_candidates(task.get("id"), task.get("description", ""), candidates)
+                        edges = rerank_candidates(
+                            task.get("id"), augmented_desc, candidates
+                        )
                         all_reranker_edges.extend(edges)
                         for edge in edges:
                             graph_type = next(
-                                (c["graph"] for c in candidates if c["id"] == edge.candidate_id),
+                                (c["graph"] for c in candidates
+                                 if c["id"] == edge.candidate_id),
                                 "unknown",
                             )
                             memory.add_episodic_edge(
@@ -146,31 +171,51 @@ def rerank_and_retrieve_node(state: AgentState) -> dict:
                                 {"graph": graph_type, "score": edge.score},
                             )
                     except Exception as rerank_exc:
-                        logger.warning("Reranking failed for task %s (%s) — skipping.", task.get("id"), rerank_exc)
+                        logger.warning(
+                            "Reranking failed for %s (%s).",
+                            task.get("id"), rerank_exc,
+                        )
 
-            memory.save()
+        memory.save()
 
-        # Compute difficulty for each task
         task_difficulties = {}
         if dag:
             import networkx as nx
             from orchestrator.difficulty import compute_base_difficulty, propagate_difficulty
 
-            # Build a simple linear graph from task order as pre-execution proxy
             task_list = dag.get("tasks", [])
             G = nx.DiGraph()
             for i, t in enumerate(task_list):
                 G.add_node(t.get("id"))
                 if i > 0:
-                    G.add_edge(task_list[i - 1].get("id"), t.get("id"))
+                    G.add_edge(
+                        task_list[i - 1].get("id"),
+                        t.get("id"),
+                        edge_type="observed",
+                    )
+            merge_declared_edges(G, task_list)
 
-            base = {
-                t.get("id"): compute_base_difficulty(t.get("id"), all_reranker_edges, G)
-                for t in task_list
-            }
-            task_difficulties = propagate_difficulty(G, base)
+            if phase == 0:
+                for t in task_list:
+                    comp = compression_ratio(t.get("description", ""))
+                    task_difficulties[t.get("id")] = prior_difficulty(
+                        task_type=t.get("task_type", "transform"),
+                        implementation_depth=t.get("implementation_depth", "library"),
+                        actor_capability=t.get("actor_capability", "python"),
+                        compression=comp,
+                    )
+            else:
+                base = {
+                    t.get("id"): compute_base_difficulty(
+                        task_id=t.get("id"),
+                        task_description=t.get("description", ""),
+                        reranker_edges=all_reranker_edges,
+                        composition_graph=G,
+                    )
+                    for t in task_list
+                }
+                task_difficulties = propagate_difficulty(G, base)
 
-            # Store difficulty on episodic nodes
             for task_id, score in task_difficulties.items():
                 if task_id in memory.episodic.nodes:
                     memory.episodic.nodes[task_id]["difficulty"] = score
@@ -178,12 +223,12 @@ def rerank_and_retrieve_node(state: AgentState) -> dict:
 
         return {
             "task_difficulties": task_difficulties,
-            "messages": ["Reranked and linked episodic tasks to semantic and procedural knowledge."],
+            "messages": ["Scored tasks against knowledge graphs."],
         }
 
     except Exception as exc:
-        logger.warning("Rerank_and_Retrieve failed (%s) — skipping knowledge linking.", exc)
-        return {"messages": [f"Knowledge linking skipped ({type(exc).__name__}) — proceeding to execution."]}
+        logger.warning("Rerank_and_Retrieve failed (%s) — skipping.", exc)
+        return {"messages": [f"Knowledge linking skipped ({type(exc).__name__})."]}
 
 
 def _append_workspace_entry(
@@ -294,6 +339,7 @@ def execute_node(state: AgentState) -> dict:
             exit_code=raw_result["exit_code"],
         )
 
+        delta = None
         try:
             after = WorkspaceState.capture(tool)
             delta = after.diff(before)
@@ -326,6 +372,43 @@ def execute_node(state: AgentState) -> dict:
             update["current_attempt"] = 1
             is_last = idx + 1 >= len(dag.get("tasks", []))
             update["next_route"] = "Collect_Outputs" if is_last else "Execute"
+
+            # DRS: introduce files created by this task into the discourse scope
+            if delta is not None:
+                try:
+                    from orchestrator.discourse import DRS
+                    drs_dict = state.get("discourse_state") or {}
+                    drs = DRS.from_dict(drs_dict) if drs_dict else DRS(label="main")
+                    drs.introduce_from_delta(task_id, delta)
+                    update["discourse_state"] = drs.to_dict()
+                except Exception as drt_exc:
+                    logger.debug("DRS update failed (%s) — skipping.", drt_exc)
+
+            # DRS: commit retry scope if this was a retry attempt
+            if state.get("current_attempt", 1) > 1:
+                try:
+                    from orchestrator.discourse import DRS
+                    outer_drs_dict = state.get("discourse_state") or {}
+                    retry_drs_dict = state.get("retry_discourse_state") or {}
+                    if retry_drs_dict and outer_drs_dict:
+                        outer_drs = DRS.from_dict(outer_drs_dict)
+                        outer_drs.commit_retry_scope(retry_drs_dict)
+                        update["discourse_state"] = outer_drs.to_dict()
+                    update["retry_discourse_state"] = {}
+                except Exception as commit_exc:
+                    logger.debug("DRS retry commit failed (%s) — skipping.", commit_exc)
+
+            # Phase 0: seed the procedural graph from this task's typed fields
+            try:
+                from orchestrator.phase_priors import execution_phase, seed_graph_from_task
+                ph = execution_phase(state.get("tasks_completed_count", 0))
+                if ph == 0:
+                    seed_graph_from_task(task, memory)
+            except Exception:
+                pass
+
+            # Increment completed task count
+            update["tasks_completed_count"] = state.get("tasks_completed_count", 0) + 1
         else:
             fail_id = f"{task_id}_fail_{state['current_attempt']}"
             memory.add_episodic_node(fail_id, {
@@ -342,7 +425,7 @@ def execute_node(state: AgentState) -> dict:
 
 
 def handle_failure_node(state: AgentState) -> dict:
-    """Handle sandbox failures — extract error context for retry visibility."""
+    """Handle execution failures. Opens a DRS retry scope. Escalates tier."""
     logger.info("Executing Handle_Failure node...")
     dag = state["dag"]
     idx = state["current_task_idx"]
@@ -354,14 +437,19 @@ def handle_failure_node(state: AgentState) -> dict:
     sandbox_results = state.get("sandbox_results", [])
     if sandbox_results:
         last = sandbox_results[-1]
-        if isinstance(last, dict):
-            last_stderr = last.get("stderr", "")
-            last_exit_code = last.get("exit_code", 1)
-        else:
-            last_stderr = getattr(last, "stderr", "")
-            last_exit_code = getattr(last, "exit_code", 1)
+        last_stderr = (
+            last.get("stderr", "") if isinstance(last, dict)
+            else getattr(last, "stderr", "")
+        )
+        last_exit_code = (
+            last.get("exit_code", 1) if isinstance(last, dict)
+            else getattr(last, "exit_code", 1)
+        )
 
     new_attempt = state["current_attempt"] + 1
+    task_id = task.get("id", "")
+    diff_score = state.get("task_difficulties", {}).get(task_id, 0.5)
+
     update: dict = {
         "current_attempt": new_attempt,
         "messages": [
@@ -372,8 +460,20 @@ def handle_failure_node(state: AgentState) -> dict:
     }
 
     if new_attempt > MAX_RETRIES:
-        if task.get("id") in memory.episodic.nodes:
-            memory.episodic.nodes[task.get("id")]["status"] = "failed"
+        # Retry budget exhausted — discard retry scope, mark failed
+        try:
+            from orchestrator.discourse import DRS
+            outer_drs_dict = state.get("discourse_state") or {}
+            if outer_drs_dict:
+                outer_drs = DRS.from_dict(outer_drs_dict)
+                outer_drs.discard_retry_scope()
+                update["discourse_state"] = outer_drs.to_dict()
+            update["retry_discourse_state"] = {}
+        except Exception:
+            pass
+
+        if task_id in memory.episodic.nodes:
+            memory.episodic.nodes[task_id]["status"] = "failed"
         tasks = [t.copy() for t in dag.get("tasks", [])]
         tasks[idx] = {**tasks[idx], "status": "failed"}
         update["dag"] = {**dag, "tasks": tasks}
@@ -381,8 +481,35 @@ def handle_failure_node(state: AgentState) -> dict:
         update["current_attempt"] = 1
         is_last = idx + 1 >= len(tasks)
         update["next_route"] = "Collect_Outputs" if is_last else "Execute"
-        logger.warning("Task %s exhausted retries — marking failed.", task.get("id"))
+        logger.warning("Task %s exhausted retries — marking failed.", task_id)
     else:
+        # Open a DRS retry scope for the next attempt
+        try:
+            from orchestrator.discourse import DRS
+            outer_drs_dict = state.get("discourse_state") or {}
+            outer_drs = (
+                DRS.from_dict(outer_drs_dict) if outer_drs_dict
+                else DRS(label="main")
+            )
+            retry_drs = outer_drs.open_retry_scope(task_id)
+            update["retry_discourse_state"] = retry_drs.to_dict()
+        except Exception:
+            pass
+
+        # Tier escalation: one step up from current tier, or expert if
+        # difficulty > 0.85. No causal model — the data does not support
+        # one at this point (see assessment doc for full reasoning).
+        from orchestrator.difficulty import difficulty_to_tier
+        from orchestrator.phase_priors import prior_tier
+        current_tier = difficulty_to_tier(diff_score)
+        new_tier = prior_tier(diff_score, current_tier)
+        logger.info(
+            "Failure escalation: %s → %s (difficulty=%.2f)",
+            current_tier, new_tier, diff_score,
+        )
+        tasks = [t.copy() for t in dag.get("tasks", [])]
+        tasks[idx] = {**tasks[idx], "_retry_tier": new_tier}
+        update["dag"] = {**dag, "tasks": tasks}
         update["next_route"] = "Execute"
 
     memory.save()
@@ -765,6 +892,9 @@ async def agent_loop_stream(user_prompt: str) -> AsyncIterator[dict]:
         "composition_deltas": {},
         "task_difficulties": {},
         "iteration_count": 0,
+        "discourse_state": {},
+        "retry_discourse_state": {},
+        "tasks_completed_count": 0,
     }
 
     graph = get_compiled_graph()
@@ -788,6 +918,9 @@ async def agent_loop_stream(user_prompt: str) -> AsyncIterator[dict]:
             "next_route": s_update.get("next_route", full_state.get("next_route")),
             "task_difficulties": full_state.get("task_difficulties", {}),
             "iteration_count": full_state.get("iteration_count", 0),
+            "discourse_state": full_state.get("discourse_state", {}),
+            "retry_discourse_state": full_state.get("retry_discourse_state", {}),
+            "tasks_completed_count": full_state.get("tasks_completed_count", 0),
         }
         memory = TriGraphMemory.load()
         yield {

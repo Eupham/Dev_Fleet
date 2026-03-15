@@ -145,6 +145,19 @@ class CompositionLedger:
             for b in tasks:
                 if a != b and self.deltas[a].writes & self.deltas[b].reads:
                     G.add_edge(a, b)
+
+        # Stamp all inferred edges as observed (filesystem co-occurrence)
+        for u, v in G.edges():
+            G[u][v]["edge_type"] = "observed"
+
+        # Circular filesystem dependencies are logically incoherent for
+        # sequential execution. Raise rather than silently return a bad graph.
+        if not nx.is_directed_acyclic_graph(G):
+            raise ValueError(
+                "Derived composition graph is cyclic. Tasks with circular "
+                "filesystem dependencies cannot execute sequentially."
+            )
+
         return G
 
     def to_dict(self) -> dict:
@@ -159,3 +172,26 @@ class CompositionLedger:
             ledger.deltas[task_id] = StateDelta.from_dict(delta_dict)
             ledger._order.append(task_id)
         return ledger
+
+
+def merge_declared_edges(G: nx.DiGraph, tasks: list) -> nx.DiGraph:
+    """Stamp declared dependency edges from task preconditions onto G.
+
+    Declared edges reflect actual causal dependencies: task A produces
+    output that task B requires. Observed edges (from CompositionLedger)
+    reflect filesystem co-occurrence which can be spurious.
+
+    Only declared edges are used for structural difficulty computation.
+    Both types are preserved in G for inspection.
+    """
+    id_set = {t.get("id") for t in tasks}
+    for task in tasks:
+        src_id = task.get("id")
+        for pre_id in task.get("preconditions", []):
+            if pre_id in id_set and src_id:
+                if G.has_node(pre_id) and G.has_node(src_id):
+                    if G.has_edge(pre_id, src_id):
+                        G[pre_id][src_id]["edge_type"] = "declared"
+                    else:
+                        G.add_edge(pre_id, src_id, edge_type="declared")
+    return G
