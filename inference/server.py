@@ -1,7 +1,7 @@
 """Inference Engine — vLLM with GPU Memory Snapshots.
 
-Hosts Qwen/Qwen3-Coder-30B-A3B-Instruct behind an OpenAI-compatible API on
-a single A10G GPU.  Model weights are cached in Modal Volumes.
+Hosts Qwen/Qwen3.5-35B-A3B-GPTQ-Int4 behind an OpenAI-compatible API on
+a single L40S GPU (48 GB VRAM).  Model weights are cached in Modal Volumes.
 GPU memory snapshots eliminate cold-start JIT compilation overhead so we
 never need to keep a GPU warm (scales to zero).
 
@@ -18,6 +18,7 @@ Snapshot lifecycle (per Modal GPU snapshot docs):
                No JIT recompilation because CUDA graphs survived the snapshot.
 """
 
+import atexit
 import socket
 import subprocess
 import time
@@ -35,11 +36,123 @@ MINUTES = 60  # seconds
 VLLM_PORT = 8000
 N_GPU = 1
 
-MODEL_NAME = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+MODEL_NAME = "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4"
 SERVED_MODEL_NAME = "llm"  # short alias for all orchestrator calls
 
 # ---------------------------------------------------------------------------
-# Container image — vLLM + HuggingFace tooling
+# VRAM Registry
+# ---------------------------------------------------------------------------
+# Schema: (total_params_B, bytes_per_param, quant_label, vision_overhead_gb)
+#
+# bytes_per_param:
+#   bf16 / fp16          → 2.0
+#   fp8                  → 1.0
+#   int8                 → 1.0
+#   gptq-int4 / moe_wna16 / awq-int4  → 0.5
+#
+# vision_overhead_gb:
+#   Text-only models (Qwen3, QwQ, Qwen2.5-Coder)  → 0.0
+#   Multimodal models (Qwen3.5)                    → 8.0  (conservative estimate)
+#   Pass language_model_only=True to zero this out.
+#
+# MoE models: always use TOTAL parameter count, not active parameter count.
+# All expert weights must reside in VRAM regardless of activation sparsity.
+MODEL_REGISTRY: dict[str, tuple[float, float, str, float]] = {
+    # ── Qwen3.5 multimodal MoE (GDN+MoE, requires vLLM nightly) ────────────
+    "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4": (35.0, 0.5, "moe_wna16", 8.0),
+    "Qwen/Qwen3.5-35B-A3B-FP8":       (35.0, 1.0, "fp8",        8.0),
+    "Qwen/Qwen3.5-35B-A3B":           (35.0, 2.0, "bf16",       8.0),
+    "Qwen/Qwen3.5-27B":               (27.0, 2.0, "bf16",       8.0),
+    "Qwen/Qwen3.5-9B":                (9.0,  2.0, "bf16",       8.0),
+    # ── Qwen3 text-only (stable vLLM, AWQ available) ────────────────────────
+    "Qwen/Qwen3-8B-Instruct":               (8.0,  2.0, "bf16",     0.0),
+    "Qwen/Qwen3-8B-Instruct-AWQ":           (8.0,  0.5, "awq-int4", 0.0),
+    "Qwen/Qwen3-32B-Instruct":              (32.0, 2.0, "bf16",     0.0),
+    "Qwen/Qwen3-32B-Instruct-AWQ":          (32.0, 0.5, "awq-int4", 0.0),
+    "Qwen/Qwen3-30B-A3B-Instruct":          (30.0, 2.0, "bf16",     0.0),
+    "Qwen/Qwen3-30B-A3B-Instruct-AWQ":      (30.0, 0.5, "awq-int4", 0.0),
+    "Qwen/Qwen3-Coder-30B-A3B-Instruct":    (30.0, 2.0, "bf16",     0.0),
+    "Qwen/Qwen3-Coder-30B-A3B-Instruct-AWQ":(30.0, 0.5, "awq-int4", 0.0),
+}
+
+_VRAM_HEADROOM = 0.75  # 25% reserved for KV cache, CUDA graphs, fragmentation
+
+
+def _get_gpu_vram_gb() -> float:
+    """Return total VRAM in GB for GPU 0."""
+    raw = subprocess.check_output(
+        ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+        text=True,
+    ).strip().splitlines()[0]
+    return float(raw) / 1024  # MiB → GB
+
+
+def assert_model_fits(model_id: str, language_model_only: bool = False) -> None:
+    """
+    Raise before launching vLLM if the model cannot fit in available VRAM.
+    required_gb = (params_B * bytes_per_param) + vision_overhead_gb
+    budget_gb   = gpu_vram_gb * 0.75
+    PASS iff required_gb <= budget_gb
+    """
+    if model_id not in MODEL_REGISTRY:
+        raise KeyError(
+            f"Model {model_id!r} is not in MODEL_REGISTRY.\n"
+            "Add (total_params_B, bytes_per_param, quant_label, vision_overhead_gb) "
+            "before deploying. Look up the model card — do not guess."
+        )
+    params_b, bytes_pp, quant_label, vision_gb = MODEL_REGISTRY[model_id]
+    effective_vision = 0.0 if language_model_only else vision_gb
+    required_gb = (params_b * bytes_pp) + effective_vision
+    gpu_vram_gb = _get_gpu_vram_gb()
+    budget_gb = gpu_vram_gb * _VRAM_HEADROOM
+    if required_gb > budget_gb:
+        vision_note = "  [vision skipped via --language-model-only]" if language_model_only else ""
+        raise ValueError(
+            f"\nVRAM preflight FAILED — do not launch vLLM.\n"
+            f"  model      : {model_id} ({quant_label})\n"
+            f"  weights    : {params_b * bytes_pp:.1f} GB  "
+            f"({params_b}B params × {bytes_pp} B/param)\n"
+            f"  vision     : {effective_vision:.1f} GB{vision_note}\n"
+            f"  total need : {required_gb:.1f} GB\n"
+            f"  GPU budget : {budget_gb:.1f} GB  "
+            f"({gpu_vram_gb:.1f} GB × {_VRAM_HEADROOM} headroom)\n"
+            f"  shortfall  : {required_gb - budget_gb:.1f} GB\n\n"
+            "Fix options:\n"
+            "  1. Pass --language-model-only if vision is not needed (saves ~8 GB)\n"
+            "  2. Use a quantized variant (GPTQ-Int4 or FP8)\n"
+            "  3. Provision a larger GPU — L40S minimum for this model\n"
+            "  4. Use Qwen/Qwen3-8B-Instruct on A10 for smoketests"
+        )
+
+
+def assert_vllm_supports_architecture(model_id: str) -> None:
+    """
+    For Qwen3.5 models, confirm the installed vLLM has the GDN architecture
+    registered. Stable releases prior to Qwen3.5 support will fail with a
+    ValidationError that looks identical to other startup failures.
+    """
+    if "Qwen3.5" not in model_id:
+        return
+    try:
+        from vllm.model_executor.models import ModelRegistry
+        required = "Qwen3_5MoeForConditionalGeneration"
+        if required not in ModelRegistry.get_supported_archs():
+            raise RuntimeError(
+                f"Installed vLLM does not support {required}.\n"
+                "Install the correct version:\n"
+                "  uv pip install vllm --torch-backend=auto "
+                "--extra-index-url https://wheels.vllm.ai/nightly\n"
+                "Pin the resulting version after confirming it works."
+            )
+    except ImportError:
+        raise RuntimeError(
+            "vLLM is not installed or not importable. "
+            "Run: uv pip install vllm --torch-backend=auto "
+            "--extra-index-url https://wheels.vllm.ai/nightly"
+        )
+
+# ---------------------------------------------------------------------------
+# Container image — vLLM nightly + HuggingFace tooling
 # ---------------------------------------------------------------------------
 
 vllm_image = (
@@ -50,7 +163,9 @@ vllm_image = (
     .add_local_python_source("fleet_app", copy=True)
     .add_local_python_source("orchestrator", copy=True)
     .uv_pip_install(
-        "vllm==0.17.1",
+        "vllm",
+        "--torch-backend=auto",
+        "--extra-index-url", "https://wheels.vllm.ai/nightly",
         "hf_transfer",
     )
     .run_commands(
@@ -91,19 +206,29 @@ vllm_cache_vol = modal.Volume.from_name("vllm-cache-vol", create_if_missing=True
 # Snapshot helpers
 # ---------------------------------------------------------------------------
 
-def _wait_ready(proc: subprocess.Popen) -> None:
-    """Busy-poll until the vLLM server is accepting connections."""
-    while True:
+def _wait_ready(proc: subprocess.Popen, timeout_s: int = 120) -> None:
+    """
+    Poll until vLLM accepts connections or the process exits.
+    A crashed process is NOT retried. Connection refused while the process
+    is alive is treated as normal startup delay.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(
+                f"vLLM exited with code {proc.returncode} during startup.\n"
+                "Do not retry with identical arguments — this failure is deterministic.\n"
+                "Check stdout/stderr above for the root cause."
+            )
         try:
             socket.create_connection(("localhost", VLLM_PORT), timeout=1).close()
-            # Double check with an HTTP health endpoint
-            resp = requests.get(f"http://localhost:{VLLM_PORT}/health", timeout=5)
-            if resp.status_code == 200:
-                return
-        except (OSError, requests.exceptions.RequestException):
-            if proc.poll() is not None:
-                raise RuntimeError(f"vLLM exited with code {proc.returncode}")
+            return  # server is ready
+        except ConnectionRefusedError:
             time.sleep(1)
+    proc.terminate()
+    raise TimeoutError(
+        f"vLLM did not become ready within {timeout_s}s. Process terminated."
+    )
 
 
 def _warmup() -> None:
@@ -122,7 +247,7 @@ def _warmup() -> None:
 
 
 def _build_serve_cmd() -> list[str]:
-    """Build the vLLM serve command."""
+    """Build the vLLM serve command for Qwen3.5-35B-A3B-GPTQ-Int4 on L40S."""
     return [
         "vllm",
         "serve",
@@ -137,20 +262,24 @@ def _build_serve_cmd() -> list[str]:
         "--tensor-parallel-size",
         str(N_GPU),
         "--gpu-memory-utilization",
-        "0.90",
-        # Disable CUDA-IPC custom allocator — shared-memory handles don't survive
-        # CRIU migration to a different physical node, causing CudaCheckpointException.
-        "--disable-custom-all-reduce",
+        "0.85",
+        "--quantization",
+        "moe_wna16",           # NOT gptq, NOT awq_marlin — MoE-specific INT4 kernel
+        "--language-model-only",   # skip vision encoder; reclaim ~8 GB for KV cache
+        "--reasoning-parser",
+        "qwen3",               # strip <think>...</think> from completions
+        "--enable-auto-tool-choice",
+        "--tool-call-parser",
+        "qwen3_coder",
         # Enable sleep/wake_up endpoints (requires VLLM_SERVER_DEV_MODE=1)
         "--enable-sleep-mode",
-        "--dtype=bfloat16",  # Ampere+ GPUs support bfloat16 natively
+        "--dtype=bfloat16",    # activations dtype — weights remain at INT4
         "--max-num-seqs",
         "4",
         "--max-model-len",
-        "8192",
+        "131072",              # 128K — not 262K; 262K exhausts KV cache on single L40S
         "--max-num-batched-tokens",
-        "8192",
-        # MoE routing is handled automatically by vLLM 0.17.1 — no extra flags needed.
+        "131072",
     ]
 
 # ---------------------------------------------------------------------------
@@ -160,7 +289,7 @@ def _build_serve_cmd() -> list[str]:
 
 @app.cls(
     image=vllm_image,
-    gpu="A10G",
+    gpu="L40S",
     scaledown_window=2,  # Modal minimum (>0 required); snapshots handle cold-start
     timeout=10 * MINUTES,
     retries=0,
@@ -188,10 +317,20 @@ class Inference:
         # Blind PyTorch/NCCL to any ghost GPUs visible to cgroups on multi-GPU chassis.
         _os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
+        # Preflight checks — raise before launching vLLM if the model cannot fit.
+        assert_vllm_supports_architecture(MODEL_NAME)
+        assert_model_fits(MODEL_NAME, language_model_only=True)
+
         cmd = _build_serve_cmd()
+        # Log only after the full command is constructed (Fix 4).
         print("[dev_fleet] Starting vLLM for snapshot:", " ".join(cmd))
         self.proc = subprocess.Popen(cmd)
-        _wait_ready(self.proc)
+        atexit.register(self.stop)  # ensure cleanup on unhandled exceptions
+        try:
+            _wait_ready(self.proc)
+        except Exception:
+            self.stop()
+            raise
         _warmup()
 
         # Put vLLM to sleep: offload weights to CPU memory so the snapshot
@@ -279,4 +418,17 @@ class Inference:
 
     @modal.exit()
     def stop(self):
-        self.proc.terminate()
+        """Terminate vLLM. Called from __exit__, atexit, and exception handlers."""
+        if getattr(self, "proc", None) is None:
+            return
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+        self.proc = None
+
+    def __exit__(self, *_):
+        self.stop()
