@@ -1,9 +1,10 @@
 """Supervisor — Intent classification and routing node.
 
 Separates the concern of *what the user wants* from *how to do it*.
-Three intents are recognised:
+Four intents are recognised:
 
   CONVERSATION    — greetings, questions, chat.  Handled by conversation_node.
+  RESEARCH        — web research requests.  Routed to Research → Decompose.
   DECOMPOSE       — multi-step coding tasks.  Routed to Retrieve_Codebase → Decompose.
   DIRECT_EXECUTE  — simple, single-step commands.  Bypasses Frege decomposition.
 """
@@ -25,10 +26,11 @@ if TYPE_CHECKING:
 
 
 class IntentClassification(BaseModel):
-    intent: Literal["CONVERSATION", "DECOMPOSE", "DIRECT_EXECUTE"] = Field(
+    intent: Literal["CONVERSATION", "RESEARCH", "DECOMPOSE", "DIRECT_EXECUTE"] = Field(
         description=(
             "Classify the prompt. "
             "CONVERSATION for greetings/chat. "
+            "RESEARCH for web research, online lookups, finding information. "
             "DECOMPOSE for complex coding tasks requiring multiple steps. "
             "DIRECT_EXECUTE for simple, single-step commands."
         )
@@ -47,52 +49,31 @@ def supervisor_node(state: "AgentState") -> dict:
     logger = logging.getLogger("dev_fleet.supervisor")
     logger.info("Supervisor classifying intent...")
 
-    prompt_lower = state["user_prompt"].lower()
-
-    # Hard-coded override: research or build prompts always decompose.
-    # This prevents small models from misrouting multi-step tasks.
-    _decompose_signals = (
-        "research", "build", "create", "write", "implement", "develop",
-        "design", "make", "code", "program", "find", "search", "look up",
-        "analyze", "test", "fix", "debug", "deploy", "run", "execute",
-        "domain", "industry", "application", "solve", "generate",
-    )
-    _conversation_only = (
-        "hello", "hi ", "hey ", "thanks", "thank you", "what is your name",
-        "how are you", "who are you",
-    )
-
-    is_clearly_conversational = any(prompt_lower.startswith(s) or s == prompt_lower for s in _conversation_only)
-    has_action_word = any(w in prompt_lower for w in _decompose_signals)
-
-    if has_action_word and not is_clearly_conversational:
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an intent classifier. "
+                "Respond with exactly one word — no explanation, no punctuation.\n"
+                "CONVERSATION: greetings, smalltalk, asking who you are.\n"
+                "RESEARCH: requests to search online, do web research, look up information.\n"
+                "DIRECT_EXECUTE: a single simple command (e.g. 'print hello world').\n"
+                "DECOMPOSE: everything else — build, create, implement, multi-step tasks."
+            ),
+        },
+        {"role": "user", "content": state["user_prompt"]},
+    ]
+    try:
+        classification: IntentClassification = chat_completion(
+            messages,
+            temperature=0.0,
+            max_tokens=16,
+            schema=IntentClassification,
+        )
+        intent = classification.intent
+    except Exception as exc:
+        logger.warning("Intent classification failed (%s). Defaulting to DECOMPOSE.", exc)
         intent = "DECOMPOSE"
-        logger.info("Supervisor override: action words detected, forcing DECOMPOSE.")
-    else:
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are an intent classifier. "
-                    "Respond with exactly one word — no explanation, no punctuation.\n"
-                    "CONVERSATION: greetings, smalltalk, asking who you are.\n"
-                    "DIRECT_EXECUTE: a single simple command (e.g. 'print hello world').\n"
-                    "DECOMPOSE: everything else — research, build, multi-step tasks."
-                ),
-            },
-            {"role": "user", "content": state["user_prompt"]},
-        ]
-        try:
-            classification: IntentClassification = chat_completion(
-                messages,
-                temperature=0.0,
-                max_tokens=16,
-                schema=IntentClassification,
-            )
-            intent = classification.intent
-        except Exception as exc:
-            logger.warning("Intent classification failed (%s). Defaulting to DECOMPOSE.", exc)
-            intent = "DECOMPOSE"
 
     logger.info("Supervisor classified intent as %s", intent)
     return {

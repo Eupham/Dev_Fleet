@@ -1,10 +1,13 @@
 """Compositional Task Parser — Decomposes user prompts into a Task DAG.
 
-Implements Frege's compositionality principle operationally: each AtomicTaskNode
-declares the semantic tokens it consumes (inputs_needed) and produces
-(outputs_produced). The TaskDAG validator checks that the composition of all
-nodes satisfies correct ordering — the meaning of the whole is derivable from
-the meanings of its parts and their declared combination rules.
+Implements Frege's compositionality principle operationally: the meaning of
+the whole task is a function of the meanings of its atomic parts and their
+combination rules.
+
+Composition structure is derived from execution (see orchestrator/composition.py),
+not declared by the model. AtomicTaskNode is intentionally minimal — descriptions
+and tool hints only. Dependency edges are inferred post-execution by observing
+filesystem transitions.
 
 Decomposition is performed by the instruction-tuned Qwen model via Modal-native RPC.
 """
@@ -14,8 +17,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-import networkx as nx
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
@@ -26,53 +28,29 @@ from pydantic import BaseModel, Field, model_validator
 class AtomicTaskNode(BaseModel):
     """A single indivisible task produced by compositional decomposition.
 
-    Each node declares its semantic type (inputs_needed, outputs_produced)
-    so the TaskDAG validator can verify that the composition of all nodes
-    satisfies the original intent — honoring Frege's compositionality
-    principle: the meaning of the whole is a function of the meanings of
-    its parts and their combination rules.
+    Intentionally minimal: the model provides descriptions and tool hints.
+    All composition structure (dependencies, I/O contracts) is derived from
+    execution by observing filesystem transitions — not declared by the model.
     """
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     description: str = Field(...)
-    depends_on: list[str] = Field(
-        default_factory=list,
-        description="IDs of tasks this node depends on (DAG edges).",
-    )
     tool_hint: str = Field(
         default="",
-        description="Optional hint: 'bash', 'python', 'git', or empty.",
+        description="Optional hint: 'bash', 'python', or empty.",
     )
     status: str = Field(
         default="pending",
         description="pending | running | success | failed",
-    )
-    inputs_needed: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Semantic tokens this task consumes (e.g. ['file:pong.py', 'env:python3']). "
-            "Used by the composition validator."
-        ),
-    )
-    outputs_produced: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Semantic tokens this task produces (e.g. ['file:pong.py', 'result:score']). "
-            "Used to verify downstream dependency satisfaction."
-        ),
     )
 
 
 class TaskDAG(BaseModel):
     """The complete compositional decomposition of a user prompt.
 
-    Validates that:
-    1. The dependency graph is acyclic (topological correctness).
-    2. Every task's inputs_needed are either satisfied by a prior task's
-       outputs_produced, or are declared as external inputs (available
-       in the environment). This is the Frege compositionality check:
-       the meaning of the whole task is derivable from the meanings of
-       its parts via their declared I/O contracts.
+    A simple container: the LLM's suggested task ordering is a heuristic.
+    The runtime may override it based on observed composition structure from
+    CompositionLedger after execution.
     """
 
     user_prompt: str
@@ -82,73 +60,10 @@ class TaskDAG(BaseModel):
     )
     tasks: list[AtomicTaskNode]
 
-    @model_validator(mode="after")
-    def validate_dependencies(self) -> "TaskDAG":
-        import logging
-
-        logger = logging.getLogger("dev_fleet.frege_parser")
-
-        # Build a dual map: integer index strings and real IDs both resolve to the task ID.
-        id_map: dict[str, str] = {str(i): task.id for i, task in enumerate(self.tasks)}
-        id_map.update({task.id: task.id for task in self.tasks})
-
-        task_map: dict[str, AtomicTaskNode] = {task.id: task for task in self.tasks}
-
-        G = nx.DiGraph()
-        for task in self.tasks:
-            resolved: list[str] = []
-            for dep in task.depends_on:
-                if dep in id_map:
-                    resolved.append(id_map[dep])
-                else:
-                    logger.warning("Dropping unknown dependency %r from task %s", dep, task.id)
-            task.depends_on = resolved
-            G.add_node(task.id)
-            for dep in resolved:
-                G.add_edge(dep, task.id)
-
-        if not nx.is_directed_acyclic_graph(G):
-            raise ValueError("Task decomposition resulted in a circular dependency.")
-
-        sorted_ids = list(nx.topological_sort(G))
-        self.tasks = [task_map[node_id] for node_id in sorted_ids]
-
-        # --- Frege compositionality check ---
-        # Build the set of tokens available at each point in topological order.
-        # A token is "available" if it was declared as produced by a prior task,
-        # OR if no task in this DAG is responsible for producing it (external input).
-        all_produced: set[str] = set()
-        all_needed: set[str] = set()
-        for task in self.tasks:
-            all_produced.update(task.outputs_produced)
-            all_needed.update(task.inputs_needed)
-
-        # Tokens needed but never produced by any task = external dependencies.
-        # These are valid (e.g. "env:python3") — we only flag tokens that are
-        # declared needed by a task but produced only by a *later* task (ordering violation).
-        produced_so_far: set[str] = set()
-        for task in self.tasks:  # already topologically sorted
-            unmet = [
-                tok for tok in task.inputs_needed
-                if tok not in produced_so_far and tok in all_produced
-            ]
-            if unmet:
-                logger.warning(
-                    "Composition warning: task %r needs %s but those tokens are "
-                    "not yet produced at this point in the DAG. "
-                    "Check depends_on declarations.",
-                    task.description[:60], unmet
-                )
-            produced_so_far.update(task.outputs_produced)
-
-        return self
-
 
 # ---------------------------------------------------------------------------
 # Decomposition prompt template
 # ---------------------------------------------------------------------------
-
-# Context-aware system prompts — chosen based on codebase presence and task type.
 
 DECOMPOSITION_SYSTEM_CREATE = """You are a software task planner. The sandbox workspace (/workspace) is EMPTY.
 
@@ -159,10 +74,6 @@ Rules:
 4. Every task must be directly executable — no placeholders or "verify" steps.
 5. Write all output files to /workspace/.
 6. Aim for 3-5 focused tasks. Do not over-decompose.
-7. For each task, declare:
-   - inputs_needed: list of semantic tokens consumed (e.g. ["file:/workspace/app.py"])
-   - outputs_produced: list of semantic tokens produced (e.g. ["file:/workspace/app.py", "result:exit_code_0"])
-   These are used to verify the composition is complete and correctly ordered.
 
 First write intent_observation (one sentence), then list the tasks."""
 
@@ -190,13 +101,8 @@ First write intent_observation, then list the tasks."""
 def _build_decomposition_messages(
     user_prompt: str,
     codebase_context: str = "",
+    is_research: bool = False,
 ) -> list[dict[str, str]]:
-    prompt_lower = user_prompt.lower()
-    is_research = any(w in prompt_lower for w in (
-        "research", "search online", "look up", "find online", "web", "internet",
-        "download", "fetch", "browse", "http",
-    ))
-
     if is_research:
         system = DECOMPOSITION_SYSTEM_RESEARCH
     elif codebase_context:
@@ -229,6 +135,7 @@ def parse_prompt(
     user_prompt: str,
     model: str = "llm",
     codebase_context: str = "",
+    is_research: bool = False,
 ) -> TaskDAG:
     """Decompose *user_prompt* into a ``TaskDAG`` via the Qwen model.
 
@@ -238,6 +145,10 @@ def parse_prompt(
         The raw natural-language request.
     model:
         Served model name (default ``"llm"``).
+    codebase_context:
+        Optional codebase mini-map from RAG retrieval.
+    is_research:
+        Whether this is a research-oriented task (use research prompt).
 
     Returns
     -------
@@ -245,10 +156,10 @@ def parse_prompt(
     """
     from orchestrator.llm_client import chat_completion
 
-    messages = _build_decomposition_messages(user_prompt, codebase_context=codebase_context)
+    messages = _build_decomposition_messages(
+        user_prompt, codebase_context=codebase_context, is_research=is_research
+    )
 
-    # We pass the schema directly; the backend uses xgrammar to enforce structured generation.
-    # We use a higher max_tokens (4096) to prevent EOF errors when parsing complex logic.
     try:
         dag: TaskDAG = chat_completion(
             messages, model=model, temperature=0.2, max_tokens=4096, schema=TaskDAG
@@ -257,30 +168,26 @@ def parse_prompt(
         import logging
         logger = logging.getLogger("dev_fleet.frege_parser")
 
-        # Check if it's an EOF validation error (e.g. from Pydantic JSON decoding)
         if "EOF" in str(e) or "truncated" in str(e).lower():
             logger.warning("Caught EOF/Truncated JSON error during decomposition. Retrying...")
             messages.append({"role": "assistant", "content": "The output was interrupted."})
             messages.append({"role": "user", "content": "Your previous JSON response was truncated. Please output the complete JSON object."})
             try:
-                dag: TaskDAG = chat_completion(
+                dag = chat_completion(
                     messages, model=model, temperature=0.2, max_tokens=4096, schema=TaskDAG
                 )
             except Exception as e2:
-                logger.warning("Retry task decomposition failed (%s). Falling back to single-task DAG.", e2)
+                logger.warning("Retry decomposition failed (%s). Falling back to single-task DAG.", e2)
                 return TaskDAG(
                     user_prompt=user_prompt,
                     tasks=[AtomicTaskNode(description=user_prompt[:500])],
                 )
         else:
-            # Fallback: treat the entire prompt as a single task so the agent always proceeds.
             logger.warning("Task decomposition failed (%s). Falling back to single-task DAG.", e)
             return TaskDAG(
                 user_prompt=user_prompt,
                 tasks=[AtomicTaskNode(description=user_prompt[:500])],
             )
 
-    # Populate user_prompt if empty to be safe
     dag.user_prompt = user_prompt
-
     return dag

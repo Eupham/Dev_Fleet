@@ -9,5 +9,16 @@ pathspec>=0.12.1
 # Fast JSON serialisation
 orjson>=3.11.7
 
+# LangGraph agent loop
+langgraph>=0.0.10
+
+# LlamaIndex graph memory
+llama-index-core>=0.10.0
+llama-index>=0.10.0
+llama-index-embeddings-huggingface>=0.1.0
+
+# UI
+chainlit==2.10.0
+
 # Testing
 pytest>=9.0.2

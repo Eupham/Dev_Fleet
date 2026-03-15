@@ -20,7 +20,6 @@ test_image = (
     .pip_install(
         "networkx>=3.2",
         "pydantic>=2.5",
-        "smolagents",
         "llama-index-core>=0.10.0",
         "llama-index>=0.10.0",
         "llama-index-embeddings-huggingface>=0.1.0",
@@ -96,14 +95,12 @@ def test_frege_parser_schemas() -> str:
     # Default fields
     node = AtomicTaskNode(description="Write a function")
     assert node.status == "pending"
-    assert node.depends_on == []
     assert len(node.id) == 12
 
     # Custom fields
     node2 = AtomicTaskNode(
         id="abc123",
         description="Run tests",
-        depends_on=["xyz"],
         tool_hint="bash",
         status="running",
     )
@@ -119,7 +116,7 @@ def test_frege_parser_schemas() -> str:
     )
     assert len(dag.tasks) == 2
 
-    return "✓ test_frege_parser_schemas passed (5 assertions)"
+    return "✓ test_frege_parser_schemas passed (4 assertions)"
 
 
 @app.function(image=test_image, timeout=120)

@@ -149,16 +149,10 @@ class TriGraphMemory:
     property_graph: Any = field(default=None, repr=False, init=False)
 
     def __post_init__(self):
-        # Unconditionally assign both models before any LlamaIndex call.
-        # DO NOT read LISettings.embed_model or LISettings.llm before setting them —
-        # LlamaIndex's Settings properties are lazy getters that attempt to initialise
-        # OpenAI as a default the moment they are read, which raises ValueError when
-        # no OPENAI_API_KEY is present. The only safe operation is a blind write.
-        from llama_index.core import Settings as LISettings
-        from orchestrator.llm_client import ModalVLLM
-        LISettings.embed_model = ModalEmbeddings()
-        LISettings.llm = ModalVLLM()
-        self.property_graph = PropertyGraphIndex.from_documents([])
+        # property_graph is lazily initialized on first access via _ensure_property_graph().
+        # LlamaIndex global settings must be configured separately via configure() before
+        # any LlamaIndex call — see load() which calls configure() before cls().
+        self.property_graph = None
 
     # -- Serialization -------------------------------------------------------
 
@@ -185,13 +179,27 @@ class TriGraphMemory:
         # Evict the cache so the next load() reads the freshly written files.
         _invalidate_cache()
 
+    def _ensure_property_graph(self) -> Any:
+        """Lazy-initialize the PropertyGraph on first access.
+
+        Must only be called after configure() has been invoked so that
+        LlamaIndex Settings are pre-configured with our Modal models.
+        """
+        if self.property_graph is None:
+            self.property_graph = PropertyGraphIndex.from_existing(
+                property_graph_store=SimplePropertyGraphStore(),
+                kg_extractors=[],
+            )
+        return self.property_graph
+
     @classmethod
     def configure(cls) -> None:
         """Pre-configure LlamaIndex global settings before instantiation.
 
         Must be called before :meth:`load` in contexts where LlamaIndex has not
         yet been initialised, to avoid the lazy-getter bootstrap that tries to
-        reach OpenAI when no ``OPENAI_API_KEY`` is present.
+        reach OpenAI when no ``OPENAI_API_KEY`` is present. The only safe
+        operation is a blind write.
         """
         from llama_index.core import Settings as LISettings
         from orchestrator.llm_client import ModalVLLM
@@ -212,6 +220,10 @@ class TriGraphMemory:
             if _cache_is_valid():
                 return _cached_instance  # type: ignore[return-value]
 
+            # Configure LlamaIndex global settings before instantiation so that
+            # __post_init__ (which no longer sets globals) is safe to call without
+            # an OPENAI_API_KEY present.
+            cls.configure()
             mem = cls()
             for attr, path in [
                 ("semantic", SEMANTIC_PATH),
@@ -305,11 +317,7 @@ class TriGraphMemory:
         from llama_index.core.schema import TextNode
         from orchestrator.labeler import label_node
 
-        if self.property_graph is None:
-            self.property_graph = PropertyGraphIndex.from_existing(
-                property_graph_store=SimplePropertyGraphStore(),
-                kg_extractors=[],
-            )
+        self._ensure_property_graph()
 
         # Assign label + content via the labeler (noop if already set).
         classification = label_node(node_id, attrs, graph_type)
@@ -340,10 +348,9 @@ class TriGraphMemory:
 
     def _ingest_edge_to_pg(self, src: str, dst: str, label: str) -> None:
         """Upsert a single Relation edge into the LlamaIndex PropertyGraph store."""
-        if self.property_graph is None:
-            return
+        pg = self._ensure_property_graph()
         relation = Relation(source_id=src, target_id=dst, label=label)
-        self.property_graph.property_graph_store.upsert_relation(relation)
+        pg.property_graph_store.upsert_relation(relation)
 
     def _rebuild_property_graph(self):
         """Rebuild PropertyGraph from persisted NX graphs.
@@ -415,12 +422,13 @@ class TriGraphMemory:
             parts.append(f"[Episodic] {episodic_node_id}: {json.dumps(attrs, default=str)}")
 
             # Use LlamaIndex property graph retriever to fetch related semantic/procedural
-            if self.property_graph and (
+            if (
                 self.semantic.number_of_nodes() > 0 or self.procedural.number_of_nodes() > 0
             ):
                 query = str(attrs.get("description", ""))
                 try:
-                    retriever = self.property_graph.as_retriever(similarity_top_k=5)
+                    pg = self._ensure_property_graph()
+                    retriever = pg.as_retriever(similarity_top_k=5)
                     retrieved_nodes = retriever.retrieve(query)
                 except Exception as exc:
                     import logging

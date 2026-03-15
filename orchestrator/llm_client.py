@@ -1,7 +1,14 @@
 """LLM Client — Thin wrapper around Modal-native inference calls.
 
-All orchestrator modules call ``chat_completion()`` which routes to
-``Inference().generate.remote()`` — no HTTP overhead, no idle timeouts.
+All orchestrator modules call ``chat_completion()`` which routes to the
+appropriate tier's ``generate.remote()`` call — no HTTP overhead, no idle timeouts.
+
+Tier routing:
+  trivial  → InferenceSmall  (Qwen3-4B, T4)
+  simple   → InferenceMedium (Qwen3-8B, T4)
+  moderate → Inference        (Qwen3-Coder-30B-A3B, A10G)  [default]
+  complex  → Inference        (Qwen3-Coder-30B-A3B, A10G)
+  expert   → InferenceLarge   (Qwen3-Coder-480B-A35B, A100)
 """
 
 from __future__ import annotations
@@ -13,28 +20,94 @@ from llama_index.core.llms import CustomLLM, CompletionResponse, LLMMetadata
 from llama_index.core.llms.callbacks import llm_completion_callback
 
 
+def _get_inference_instance(tier: str = "moderate"):
+    """Return the appropriate inference instance for the given tier.
+
+    Falls back to the primary Inference class on any error.
+    """
+    import modal
+    import warnings
+
+    # Moderate and complex both use the primary A10G Inference class
+    if tier in ("moderate", "complex", None, ""):
+        try:
+            from inference.server import Inference
+            return Inference()
+        except Exception:
+            return modal.Cls.from_name("dev_fleet", "Inference")()
+
+    if tier == "trivial":
+        try:
+            from inference.model_pool import InferenceSmall
+            return InferenceSmall()
+        except Exception:
+            try:
+                return modal.Cls.from_name("dev_fleet", "InferenceSmall")()
+            except Exception:
+                pass
+
+    if tier == "simple":
+        try:
+            from inference.model_pool import InferenceMedium
+            return InferenceMedium()
+        except Exception:
+            try:
+                return modal.Cls.from_name("dev_fleet", "InferenceMedium")()
+            except Exception:
+                pass
+
+    if tier == "expert":
+        try:
+            from inference.model_pool import InferenceLarge
+            return InferenceLarge()
+        except Exception:
+            try:
+                return modal.Cls.from_name("dev_fleet", "InferenceLarge")()
+            except Exception:
+                pass
+
+    # Fallback to primary Inference for any unrecognized tier
+    try:
+        from inference.server import Inference
+        return Inference()
+    except Exception:
+        return modal.Cls.from_name("dev_fleet", "Inference")()
+
+
 def chat_completion(
     messages: list[dict[str, str]],
     model: str = "llm",
     temperature: float = 0.3,
     max_tokens: int = 4096,
     schema: Optional[type[BaseModel]] = None,
+    tier: str = "moderate",
 ) -> Any:
     """Send a chat completion request via Modal-native RPC.
 
-    Returns the generated text from the model, or a Pydantic object if schema is provided.
-    """
-    import modal
-    import asyncio
+    Parameters
+    ----------
+    messages:
+        OpenAI-format message list.
+    model:
+        Served model alias (default "llm").
+    temperature:
+        Sampling temperature.
+    max_tokens:
+        Maximum tokens to generate.
+    schema:
+        Optional Pydantic model for structured JSON output.
+    tier:
+        Routing tier: trivial | simple | moderate | complex | expert.
+        Determines which GPU class handles the request.
 
-    # Try importing the Inference class directly from the local app for ephemeral runs.
-    # Fallback to dynamically loading the remote class from the deployed "dev_fleet" app
-    # when called from isolated container contexts (like the test runner or chainlit).
-    try:
-        from inference.server import Inference
-        inference_inst = Inference()
-    except Exception:
-        inference_inst = modal.Cls.from_name("dev_fleet", "Inference")()
+    Returns
+    -------
+    Generated text, or Pydantic object if schema is provided.
+    """
+    import asyncio
+    import warnings
+
+    inference_inst = _get_inference_instance(tier)
 
     try:
         loop = asyncio.get_running_loop()
@@ -42,21 +115,16 @@ def chat_completion(
         loop = None
 
     if loop and loop.is_running():
-        # Already inside a running event loop (e.g. LlamaIndex async pipeline).
-        # We cannot use loop.run_until_complete() or asyncio.run() here.
-        # We must use the blocking remote call because this function is fundamentally synchronous
-        # in the context of `def complete(self, ...)` in CustomLLM.
-        # This may emit an AsyncUsageWarning from Modal, but it will execute.
-        import warnings
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             return inference_inst.generate.remote(
-                messages, model=model, temperature=temperature, max_tokens=max_tokens, schema=schema
+                messages, model=model, temperature=temperature,
+                max_tokens=max_tokens, schema=schema
             )
     else:
-        # No running event loop. Safe to use blocking .remote()
         return inference_inst.generate.remote(
-            messages, model=model, temperature=temperature, max_tokens=max_tokens, schema=schema
+            messages, model=model, temperature=temperature,
+            max_tokens=max_tokens, schema=schema
         )
 
 
@@ -65,6 +133,7 @@ def generate(
     task_description: str,
     model: str = "llm",
     temperature: float = 0.3,
+    tier: str = "moderate",
 ) -> str:
     """Query the vLLM inference service for a code/plan response.
 
@@ -78,6 +147,8 @@ def generate(
         Served model alias.
     temperature:
         Sampling temperature (lower = more deterministic).
+    tier:
+        Routing tier for model selection.
 
     Returns
     -------
@@ -92,7 +163,9 @@ def generate(
         {"role": "system", "content": system},
         {"role": "user", "content": task_description},
     ]
-    return chat_completion(messages, model=model, temperature=temperature, max_tokens=4096)
+    return chat_completion(
+        messages, model=model, temperature=temperature, max_tokens=4096, tier=tier
+    )
 
 
 class ModalVLLM(CustomLLM):
@@ -120,6 +193,7 @@ class ModalVLLM(CustomLLM):
             model=self.model_name,
             temperature=self.temperature,
             max_tokens=self.num_output,
+            tier="moderate",
         )
         return CompletionResponse(text=response_text)
 
