@@ -61,6 +61,7 @@ with _small_image.imports():
     timeout=10 * MINUTES,
     retries=0,
     enable_memory_snapshot=True,
+    experimental_options={"enable_gpu_snapshot": True},
 )
 @modal.concurrent(max_inputs=50)
 class InferenceSmall:
@@ -177,6 +178,7 @@ with _medium_image.imports():
     timeout=10 * MINUTES,
     retries=0,
     enable_memory_snapshot=True,
+    experimental_options={"enable_gpu_snapshot": True},
 )
 @modal.concurrent(max_inputs=30)
 class InferenceMedium:
@@ -291,6 +293,7 @@ with _large_image.imports():
     timeout=20 * MINUTES,
     retries=0,
     enable_memory_snapshot=True,
+    experimental_options={"enable_gpu_snapshot": True},
 )
 @modal.concurrent(max_inputs=10)
 class InferenceLarge:

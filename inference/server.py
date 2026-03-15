@@ -169,10 +169,13 @@ vllm_image = (
     .entrypoint([])
     .add_local_python_source("fleet_app", copy=True)
     .add_local_python_source("orchestrator", copy=True)
+    # --torch-backend=cu129: explicit CUDA 12.9 backend matching the base image.
+    # "auto" fails during Modal image build because no GPU driver is present,
+    # causing uv to install CPU-only PyTorch (missing libtorch_cuda.so).
     .uv_pip_install(
         "vllm",
         "hf_transfer",
-        extra_options="--torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly",
+        extra_options="--torch-backend=cu129 --extra-index-url https://wheels.vllm.ai/nightly",
     )
     .run_commands(
         [
