@@ -90,15 +90,15 @@ def test_graph_memory() -> str:
 def test_frege_parser_schemas() -> str:
     """Test Pydantic schemas for AtomicTaskNode and TaskDAG."""
     sys.path.insert(0, "/root")
-    from orchestrator.frege_parser import AtomicTaskNode, TaskDAG
+    from orchestrator.task_parser import AtomicTaskNode, TaskDAG, TransformTask
 
     # Default fields
-    node = AtomicTaskNode(description="Write a function")
+    node = TransformTask(description="Write a function")
     assert node.status == "pending"
     assert len(node.id) == 12
 
     # Custom fields
-    node2 = AtomicTaskNode(
+    node2 = TransformTask(
         id="abc123",
         description="Run tests",
         tool_hint="bash",
@@ -110,8 +110,8 @@ def test_frege_parser_schemas() -> str:
     dag = TaskDAG(
         user_prompt="Sort a list",
         tasks=[
-            AtomicTaskNode(description="Implement merge sort"),
-            AtomicTaskNode(description="Write unit tests"),
+            TransformTask(description="Implement merge sort"),
+            TransformTask(description="Write unit tests"),
         ],
     )
     assert len(dag.tasks) == 2

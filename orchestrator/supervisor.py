@@ -110,13 +110,13 @@ def conversation_node(state: "AgentState") -> dict:
 def direct_execute_node(state: "AgentState") -> dict:
     """Bypass Frege decomposition and create a single-task DAG directly."""
     import logging
-    from orchestrator.frege_parser import AtomicTaskNode, TaskDAG
+    from orchestrator.task_parser import AtomicTaskNode, TaskDAG, TransformTask
     from orchestrator.graph_memory import TriGraphMemory
 
     logger = logging.getLogger("dev_fleet.supervisor")
     logger.info("Direct_Execute node bypassing Frege decomposition.")
 
-    single_task = AtomicTaskNode(
+    single_task = TransformTask(
         id=uuid.uuid4().hex[:12],
         description=state["user_prompt"][:500],
         tool_hint="python",

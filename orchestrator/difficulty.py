@@ -1,74 +1,117 @@
-"""Compositional Difficulty Derivation — no LLM, no classification.
+# orchestrator/difficulty.py
+"""Task difficulty scoring.
 
-Difficulty is derived from two signals the system already computes:
-1. Reranker coverage: mean reranker score for a task's knowledge graph matches.
-   High score = well-covered by existing knowledge = lower difficulty.
-2. Graph topology: position in the composition graph (in-degree, out-degree, depth).
+Three signals, each independent and always well-defined:
 
-Difficulty propagates through composition edges (Frege application):
-a task inherits partial difficulty from its hardest predecessor.
-This means the difficulty of the composite is a function of the difficulties
-of its parts and their combination rules (the edges).
+  1. reranker_coverage  — 1 - mean_reranker_score for this task's matches.
+     Measures how well existing knowledge covers the task.
+     0.0 when graphs empty (Phase 0/1 fallback: phase_priors.prior_difficulty).
 
-On cold start with empty knowledge graphs, novelty = 1.0 for all tasks.
-Difficulty is driven entirely by graph topology — correct default behaviour,
-since with no prior knowledge the system should prefer stronger models.
+  2. compression_ratio  — 1 - (compressed_len / raw_len) via zlib level 9.
+     Information-dense descriptions compress poorly → higher difficulty.
+     Always available. Proxy for description complexity, not task complexity.
+     See Cilibrasi & Vitanyi (2005) for the NCD foundation — zlib is the
+     practical approximation, not the theoretical quantity.
+
+  3. cyclomatic_complexity — max cyclomatic complexity of target source code
+     via radon. Only meaningful for modification tasks where target_code is
+     the code being changed. Optional signal: returns 0.0 when not provided.
+
+propagate_difficulty uses topological_sort — O(n). The prior implementation
+used all_simple_paths for depth computation which is O(n!) in path count.
 """
-
 from __future__ import annotations
-
+import zlib
 import networkx as nx
+
+
+def compression_ratio(text: str) -> float:
+    """zlib compression ratio as a description complexity proxy.
+
+    Returns the fraction of information that cannot be compressed away.
+    Short, repetitive text → low ratio. Dense, varied text → high ratio.
+    Range: [0.0, 1.0].
+    """
+    encoded = text.encode("utf-8")
+    if len(encoded) < 10:
+        return 0.0
+    compressed_len = len(zlib.compress(encoded, level=9))
+    return 1.0 - (compressed_len / len(encoded))
+
+
+def cyclomatic_complexity_score(source_code: str) -> float:
+    """Max cyclomatic complexity of source_code, normalised to [0, 1].
+
+    Returns 0.0 if radon is not installed, source_code is empty, or
+    the code is not valid Python. This signal is supplementary —
+    the system operates correctly when it returns 0.0.
+    """
+    if not source_code:
+        return 0.0
+    try:
+        from radon.complexity import cc_visit
+        blocks = cc_visit(source_code)
+        if not blocks:
+            return 0.0
+        return min(1.0, max(b.complexity for b in blocks) / 25.0)
+    except Exception:
+        return 0.0
 
 
 def compute_base_difficulty(
     task_id: str,
-    reranker_edges: list,  # list[ScoredEdge]
+    task_description: str,
+    reranker_edges: list,
     composition_graph: nx.DiGraph,
+    target_code: str = "",
+    w_coverage: float = 0.50,
+    w_structure: float = 0.25,
+    w_compression: float = 0.15,
+    w_code: float = 0.10,
 ) -> float:
-    """Derive base difficulty from reranker coverage and graph topology.
+    """Compute base difficulty from up to three signals.
 
-    No LLM call. No classification. Two measured signals combined.
+    Uses declared edges only for structural load (edge_type="declared").
+    Observed edges from filesystem co-occurrence are excluded — they may
+    be spurious and should not inflate structural difficulty.
 
-    Parameters
-    ----------
-    task_id:
-        ID of the task to score.
-    reranker_edges:
-        ScoredEdge objects from the reranker (with .task_id and .score).
-    composition_graph:
-        The composition graph (either pre-execution DAG or post-execution
-        observed graph from CompositionLedger).
-
-    Returns
-    -------
-    float in [0.0, 1.0] — higher means harder.
+    Weights are hyperparameters. The defaults favour reranker coverage
+    because it is the most task-specific signal when graphs are populated.
     """
-    # Coverage: mean reranker score for this task's knowledge graph matches.
-    # High score = well-covered by existing knowledge = lower difficulty.
+    # Signal 1: reranker coverage
     scores = [e.score for e in reranker_edges if e.task_id == task_id]
-    coverage = sum(scores) / len(scores) if scores else 0.0
-    novelty = 1.0 - coverage
+    coverage_score = sum(scores) / len(scores) if scores else 0.0
+    coverage_difficulty = 1.0 - coverage_score
 
-    # Structural load from composition graph position.
-    if task_id not in composition_graph:
-        structure = 0.0
-    else:
-        in_degree = composition_graph.in_degree(task_id)
-        out_degree = composition_graph.out_degree(task_id)
+    # Signal 2: structural load from declared dependency edges only
+    declared = nx.DiGraph([
+        (u, v) for u, v, d in composition_graph.edges(data=True)
+        if d.get("edge_type") == "declared"
+    ])
+    structure = 0.0
+    if task_id in declared and nx.is_directed_acyclic_graph(declared):
+        in_deg = declared.in_degree(task_id)
+        out_deg = declared.out_degree(task_id)
+        # O(V+E) depth via topological DP — not all_simple_paths
+        depths = {n: 0 for n in declared.nodes()}
+        for n in nx.topological_sort(declared):
+            for successor in declared.successors(n):
+                depths[successor] = max(depths[successor], depths[n] + 1)
+        depth = depths.get(task_id, 0)
+        structure = min(1.0, in_deg * 0.2 + out_deg * 0.1 + depth * 0.15)
 
-        roots = [n for n in composition_graph.nodes()
-                 if composition_graph.in_degree(n) == 0]
-        depth = 0
-        for root in roots:
-            try:
-                for path in nx.all_simple_paths(composition_graph, root, task_id):
-                    depth = max(depth, len(path) - 1)
-            except nx.NetworkXNoPath:
-                pass
+    # Signal 3: compression ratio (always available)
+    compress = compression_ratio(task_description)
 
-        structure = min(1.0, in_degree * 0.2 + out_degree * 0.1 + depth * 0.15)
+    # Signal 4: cyclomatic complexity (modification tasks only)
+    code_signal = cyclomatic_complexity_score(target_code) if target_code else 0.0
 
-    return min(1.0, novelty * 0.6 + structure * 0.4)
+    return min(1.0,
+        w_coverage * coverage_difficulty
+        + w_structure * structure
+        + w_compression * compress
+        + w_code * code_signal
+    )
 
 
 def propagate_difficulty(
@@ -76,61 +119,35 @@ def propagate_difficulty(
     base_difficulty: dict[str, float],
     propagation_weight: float = 0.3,
 ) -> dict[str, float]:
-    """Propagate difficulty through composition edges in topological order.
+    """Propagate difficulty through composition edges. O(n) topological sort.
 
-    A task inherits difficulty from its hardest predecessor. This is the
-    Frege application: the difficulty of the whole is determined by the
-    difficulties of its parts and their combination structure.
-
-    Parameters
-    ----------
-    composition_graph:
-        DAG of task dependencies.
-    base_difficulty:
-        Per-task base difficulty from compute_base_difficulty.
-    propagation_weight:
-        How much of the predecessor's max difficulty is inherited (default 0.3).
-
-    Returns
-    -------
-    dict mapping task_id → propagated difficulty score in [0.0, 1.0].
+    A task's final difficulty is its base difficulty plus a fraction of
+    its hardest predecessor's difficulty. This reflects that harder
+    upstream work tends to produce harder downstream dependencies.
     """
-    final: dict[str, float] = {}
-
-    try:
-        order = list(nx.topological_sort(composition_graph))
-    except nx.NetworkXUnfeasible:
-        # Cycle in graph (shouldn't happen with observed composition, but be safe)
-        order = list(composition_graph.nodes())
-
-    for task_id in order:
-        predecessors = list(composition_graph.predecessors(task_id))
-        base = base_difficulty.get(task_id, 0.5)
-        if not predecessors:
-            final[task_id] = base
-        else:
-            inherited = max(final.get(p, 0.0) for p in predecessors)
-            final[task_id] = min(1.0, base + inherited * propagation_weight)
-
-    return final
+    if not nx.is_directed_acyclic_graph(composition_graph):
+        raise ValueError(
+            "composition_graph must be a DAG for topological propagation."
+        )
+    propagated = dict(base_difficulty)
+    for node in nx.topological_sort(composition_graph):
+        preds = list(composition_graph.predecessors(node))
+        if preds:
+            max_pred = max(propagated.get(p, 0.0) for p in preds)
+            propagated[node] = min(
+                1.0,
+                propagated.get(node, 0.0) + propagation_weight * max_pred,
+            )
+    return propagated
 
 
-# Thresholds are tunable. The mapping is mechanical — no LLM involved.
 def difficulty_to_tier(score: float) -> str:
-    """Map a propagated difficulty score to a routing tier.
-
-    Tiers correspond to the model routing table:
-      trivial  → Qwen3-4B (T4)
-      simple   → Qwen3-8B (T4)
-      moderate → Qwen3.5-35B-A3B-GPTQ-Int4 (L40S)
-      complex  → Qwen3.5-35B-A3B-GPTQ-Int4 (L40S)
-      expert   → Qwen3-Coder-480B-A35B-Instruct (A100-80GB)
-    """
-    if score < 0.15:
+    """Map difficulty score to model routing tier."""
+    if score < 0.20:
         return "trivial"
-    if score < 0.35:
+    if score < 0.40:
         return "simple"
-    if score < 0.55:
+    if score < 0.60:
         return "moderate"
     if score < 0.80:
         return "complex"

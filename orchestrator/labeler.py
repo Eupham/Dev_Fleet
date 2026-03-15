@@ -22,26 +22,12 @@ from pydantic import BaseModel, Field
 # Label taxonomies (per graph type)
 # ---------------------------------------------------------------------------
 
-SEMANTIC_LABELS: List[str] = [
-    "Concept",
-    "Entity",
-    "Fact",
-    "Principle",
-    "Pattern",
-    "Definition",
-]
+SEMANTIC_LABELS: List[str] = ["Code_Concept", "Code_Module"]
 
-PROCEDURAL_LABELS: List[str] = [
-    "Tool",
-    "Function",
-    "Step",
-    "Rule",
-    "Workflow",
-    "Template",
-]
+PROCEDURAL_LABELS: List[str] = ["Task_Execution", "Execution_Constraint"]
 
-# Episodic nodes are always Tasks — no LLM call needed.
-EPISODIC_LABEL = "Task"
+# Episodic nodes are always Task_Episodes — no LLM call needed.
+EPISODIC_LABEL = "Task_Episode"
 
 
 # ---------------------------------------------------------------------------
@@ -52,15 +38,32 @@ EPISODIC_LABEL = "Task"
 class NodeClassification(BaseModel):
     label: str = Field(
         description=(
-            "Semantic type label for this knowledge node.  Must be one of the "
-            "allowed labels supplied in the system prompt."
+            "Semantic nodes: 'Code_Concept' or 'Code_Module'. "
+            "Procedural nodes: 'Task_Execution' or 'Execution_Constraint'."
         )
     )
-    content: str = Field(
-        description=(
-            "One-sentence description of what this node represents, written in "
-            "plain English.  Capture the key fact, rule, or capability."
-        )
+    content: str = Field(description="One-sentence content summary.")
+    concept_type: str = Field(
+        default="",
+        description="Code_Concept only: data_structure | algorithm | pattern | "
+                    "interface | protocol | invariant",
+    )
+    actor_capability: str = Field(
+        default="",
+        description="Task_Execution only: bash | python | llm_only",
+    )
+    implementation_depth: str = Field(
+        default="",
+        description="Task_Execution only: algorithm | library | syscall",
+    )
+    constraint_type: str = Field(
+        default="",
+        description="Execution_Constraint only: memory_limit | latency_limit | "
+                    "api_contract | type_contract | security_requirement",
+    )
+    enforced_by: str = Field(
+        default="",
+        description="Execution_Constraint only: what enforces this constraint.",
     )
 
 
