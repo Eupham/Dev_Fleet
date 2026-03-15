@@ -331,11 +331,14 @@ class Inference:
         # Log only after the full command is constructed (Fix 4).
         print("[dev_fleet] Starting vLLM for snapshot:", " ".join(cmd))
         self.proc = subprocess.Popen(cmd)
-        atexit.register(self.stop)  # ensure cleanup on unhandled exceptions
+        # Register the plain helper (not the @modal.exit method) to avoid
+        # KeyError when Modal's _partial_function.__get__ is called during
+        # atexit before the cls machinery is fully initialised.
+        atexit.register(self._terminate_proc)
         try:
             _wait_ready(self.proc)
         except Exception:
-            self.stop()
+            self._terminate_proc()
             raise
         _warmup()
 
@@ -422,9 +425,8 @@ class Inference:
     def serve(self):
         """Expose the vLLM OpenAI-compatible API to the internet."""
 
-    @modal.exit()
-    def stop(self):
-        """Terminate vLLM. Called from __exit__, atexit, and exception handlers."""
+    def _terminate_proc(self):
+        """Terminate the vLLM subprocess. Plain helper — safe to call from atexit."""
         if getattr(self, "proc", None) is None:
             return
         if self.proc.poll() is None:
@@ -436,5 +438,10 @@ class Inference:
                 self.proc.wait()
         self.proc = None
 
+    @modal.exit()
+    def stop(self):
+        """Terminate vLLM on Modal container exit."""
+        self._terminate_proc()
+
     def __exit__(self, *_):
-        self.stop()
+        self._terminate_proc()
