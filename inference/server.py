@@ -164,9 +164,8 @@ vllm_image = (
     .add_local_python_source("orchestrator", copy=True)
     .uv_pip_install(
         "vllm",
-        "--torch-backend=auto",
-        "--extra-index-url", "https://wheels.vllm.ai/nightly",
         "hf_transfer",
+        extra_options="--torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly",
     )
     .run_commands(
         [
