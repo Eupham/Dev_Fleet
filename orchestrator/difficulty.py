@@ -122,8 +122,8 @@ def difficulty_to_tier(score: float) -> str:
     Tiers correspond to the model routing table:
       trivial  → Qwen3-4B (T4)
       simple   → Qwen3-8B (T4)
-      moderate → Qwen3-Coder-30B-A3B-Instruct (A10G)
-      complex  → Qwen3-Coder-30B-A3B-Instruct (A10G)
+      moderate → Qwen3.5-35B-A3B-GPTQ-Int4 (L40S)
+      complex  → Qwen3.5-35B-A3B-GPTQ-Int4 (L40S)
       expert   → Qwen3-Coder-480B-A35B-Instruct (A100-80GB)
     """
     if score < 0.15:

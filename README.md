@@ -9,7 +9,7 @@ A single Modal app (`dev_fleet`) with three container types:
 
 | Container | Description | Model | Resource |
 |-----------|-------------|-------|----------|
-| **Inference** | OpenAI-compatible vLLM server | `Qwen/Qwen2.5-Coder-7B-Instruct` | A10G |
+| **Inference** | OpenAI-compatible vLLM server | `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4` | L40S |
 | **Reranker** | Cross-encoder edge scoring | `Qwen/Qwen3-Reranker-0.6B` | CPU |
 | **Orchestrator** | Tri-Graph agent + sandboxed execution | — | CPU |
 

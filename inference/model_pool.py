@@ -7,11 +7,11 @@ routes to the appropriate class via modal.Cls.from_name.
 Tier → Model → Params → GPU:
   trivial  → Qwen3-4B                     → 4B dense  → T4
   simple   → Qwen3-8B                     → 8B dense  → T4
-  moderate → Qwen3-Coder-30B-A3B-Instruct → 3B active → A10G  (primary)
-  complex  → Qwen3-Coder-30B-A3B-Instruct → 3B active → A10G  (same as moderate)
+  moderate → Qwen3.5-35B-A3B-GPTQ-Int4   → 3B active → L40S  (primary)
+  complex  → Qwen3.5-35B-A3B-GPTQ-Int4   → 3B active → L40S  (same as moderate)
   expert   → Qwen3-32B                    → 32B dense → A100-80GB  (~64GB BF16)
 
-Note: moderate and complex share the same A10G instance (Qwen3-Coder-30B-A3B).
+Note: moderate and complex share the same L40S instance (Qwen3.5-35B-A3B-GPTQ-Int4).
 The primary Inference class in server.py serves the moderate/complex tier.
 All models are ≤80B total parameters.
 """

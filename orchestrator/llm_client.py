@@ -6,8 +6,8 @@ appropriate tier's ``generate.remote()`` call — no HTTP overhead, no idle time
 Tier routing:
   trivial  → InferenceSmall  (Qwen3-4B, T4)
   simple   → InferenceMedium (Qwen3-8B, T4)
-  moderate → Inference        (Qwen3-Coder-30B-A3B, A10G)  [default]
-  complex  → Inference        (Qwen3-Coder-30B-A3B, A10G)
+  moderate → Inference        (Qwen3.5-35B-A3B-GPTQ-Int4, L40S)  [default]
+  complex  → Inference        (Qwen3.5-35B-A3B-GPTQ-Int4, L40S)
   expert   → InferenceLarge   (Qwen3-Coder-480B-A35B, A100)
 """
 
@@ -28,7 +28,7 @@ def _get_inference_instance(tier: str = "moderate"):
     import modal
     import warnings
 
-    # Moderate and complex both use the primary A10G Inference class
+    # Moderate and complex both use the primary L40S Inference class
     if tier in ("moderate", "complex", None, ""):
         try:
             from inference.server import Inference
