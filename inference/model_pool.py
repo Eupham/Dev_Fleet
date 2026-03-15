@@ -4,15 +4,16 @@ Each tier is a separate Modal cls with its own image, GPU type, and vLLM instanc
 The difficulty module maps task difficulty scores to tiers, and the llm_client
 routes to the appropriate class via modal.Cls.from_name.
 
-Tier → Model → Active Params → GPU:
-  trivial  → Qwen3-4B                         → 4B dense  → T4
-  simple   → Qwen3-8B                         → 8B dense  → T4
-  moderate → Qwen3-Coder-30B-A3B-Instruct     → 3B active → A10G  (primary)
-  complex  → Qwen3-Coder-30B-A3B-Instruct     → 3B active → A10G  (same as moderate)
-  expert   → Qwen3-Coder-480B-A35B-Instruct   → 35B active → A100-80GB
+Tier → Model → Params → GPU:
+  trivial  → Qwen3-4B                     → 4B dense  → T4
+  simple   → Qwen3-8B                     → 8B dense  → T4
+  moderate → Qwen3-Coder-30B-A3B-Instruct → 3B active → A10G  (primary)
+  complex  → Qwen3-Coder-30B-A3B-Instruct → 3B active → A10G  (same as moderate)
+  expert   → Qwen3-32B                    → 32B dense → A100-80GB  (~64GB BF16)
 
 Note: moderate and complex share the same A10G instance (Qwen3-Coder-30B-A3B).
 The primary Inference class in server.py serves the moderate/complex tier.
+All models are ≤80B total parameters.
 """
 
 from __future__ import annotations
@@ -253,10 +254,11 @@ class InferenceMedium:
 
 
 # ---------------------------------------------------------------------------
-# Large tier — Qwen3-Coder-480B-A35B-Instruct (A100, expert tasks)
+# Large tier — Qwen3-32B (A100-80GB, expert tasks)
+# 32B dense model fits on a single A100-80GB in BF16 (~64GB VRAM).
 # ---------------------------------------------------------------------------
 
-_LARGE_MODEL = "Qwen/Qwen3-Coder-480B-A35B-Instruct"
+_LARGE_MODEL = "Qwen/Qwen3-32B"
 _LARGE_SERVED = "llm-large"
 _LARGE_PORT = 8003
 
@@ -292,7 +294,7 @@ with _large_image.imports():
 )
 @modal.concurrent(max_inputs=10)
 class InferenceLarge:
-    """Qwen3-Coder-480B-A35B on A100 — expert tasks."""
+    """Qwen3-32B on A100-80GB — expert tasks (32B dense, ~64GB BF16)."""
 
     @modal.enter(snap=True)
     def start(self):

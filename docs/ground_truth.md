@@ -96,13 +96,15 @@ See `orchestrator/difficulty.py` for `compute_base_difficulty()` and
 
 ## Model Routing Table
 
-| Tier | Model | Active Params | GPU |
-|------|-------|---------------|-----|
+| Tier | Model | Params | GPU |
+|------|-------|--------|-----|
 | trivial | Qwen3-4B | 4B dense | T4 |
 | simple | Qwen3-8B | 8B dense | T4 |
 | moderate | Qwen3-Coder-30B-A3B-Instruct | 3B active | A10G |
 | complex | Qwen3-Coder-30B-A3B-Instruct | 3B active | A10G |
-| expert | Qwen3-Coder-480B-A35B-Instruct | 35B active | A100-80GB |
+| expert | Qwen3-32B | 32B dense | A100-80GB |
+
+All models ≤80B total parameters. Qwen3-32B fits on a single A100-80GB in BF16 (~64GB VRAM).
 
 ## Secrets
 
