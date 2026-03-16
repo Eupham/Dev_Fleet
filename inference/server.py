@@ -176,6 +176,7 @@ vllm_image = (
     .uv_pip_install(
         "vllm",
         "hf_transfer",
+        "transformers>=4.53.0",
         extra_options="--torch-backend=cu129 --extra-index-url https://wheels.vllm.ai/nightly",
     )
     # Ensure Qwen3.5 support from transformers HEAD (landed in main branch recently)
