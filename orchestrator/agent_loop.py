@@ -296,6 +296,13 @@ def execute_node(state: AgentState) -> dict:
         graph_context = "(no context)"
 
     tool_hint = task.get("tool_hint", "")
+    desc_lower = task.get("description", "").lower()
+    
+    # Auto-coerce passive text tasks into executable code if they imply action
+    if tool_hint not in ("python", "bash"):
+        if any(w in desc_lower for w in ("research", "create", "execute", "run", "test", "generate", "scrape", "fetch", "search")):
+            tool_hint = "python"
+
     context = (
         graph_context
         + "\n\n[EXECUTION ENVIRONMENT] You are running inside an isolated Modal Sandbox. "
@@ -304,6 +311,11 @@ def execute_node(state: AgentState) -> dict:
         "Use bash (`cat`, `grep`, `find`, `ls /workspace`) or Python "
         "(`open()`, `pathlib`) to read and explore files already in /workspace."
     )
+    
+    if tool_hint == "python":
+        context += "\n\n[TASK REQUIREMENT] You MUST write a Python script enclosed in ```python ... ``` blocks to execute this task. Do NOT just output an explanation."
+    elif tool_hint == "bash":
+        context += "\n\n[TASK REQUIREMENT] You MUST write a Bash script enclosed in ```bash ... ``` blocks to execute this task. Do NOT just output an explanation."
 
     temp = 0.3 if tool_hint in ("python", "bash") else 0.7
     text = generate(context, task.get("description", ""), temperature=temp, tier=tier)
