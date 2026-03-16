@@ -180,12 +180,11 @@ vllm_image = (
     )
     # Ensure Qwen3.5 support from transformers HEAD (landed in main branch recently)
     .apt_install("git")
-    .run_commands(
-        ["pip install git+https://github.com/huggingface/transformers.git"]
-    )
+    .uv_pip_install("transformers==4.49.0")
     .run_commands(
         [
             f"python -c \"from huggingface_hub import snapshot_download; snapshot_download('{MODEL_NAME}')\"",
+            f"python -m vllm.entrypoints.openai.api_server --model {MODEL_NAME} --version || true",
         ],
         env={"HF_HUB_ENABLE_HF_TRANSFER": "1", "HF_XET_HIGH_PERFORMANCE": "1"},
     )
@@ -340,8 +339,7 @@ class Inference:
 
         # Build environment for vLLM subprocess
         env = _os.environ.copy()
-        env.setdefault("VLLM_READY_TIMEOUT", "600")       # 10min for model loading + AOT
-        env.setdefault("VLLM_TORCH_COMPILE_LEVEL", "0")   # Skip AOT, JIT on first request
+        # vLLM environment handled via image .env block
         # Keep existing vLLM env vars from image
         env.setdefault("VLLM_SERVER_DEV_MODE", "1")
         env.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
