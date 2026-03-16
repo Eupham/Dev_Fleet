@@ -279,24 +279,23 @@ def _build_serve_cmd() -> list[str]:
         "--gpu-memory-utilization",
         "0.85",
         "--quantization",
-        "moe_wna16",           # NOT gptq, NOT awq_marlin — MoE-specific INT4 kernel
-        "--language-model-only",   # skip vision encoder; reclaim ~8 GB for KV cache
+        "moe_wna16",           
+        "--language-model-only",   
         "--reasoning-parser",
-        "qwen3",               # strip <think>...</think> from completions
+        "qwen3",               
         "--enable-auto-tool-choice",
         "--tool-call-parser",
         "qwen3_coder",
-        # Enable sleep/wake_up endpoints (requires VLLM_SERVER_DEV_MODE=1)
         "--enable-sleep-mode",
-        "--dtype=bfloat16",    # activations dtype — weights remain at INT4
+        "--dtype=bfloat16",    
         "--max-num-seqs",
         "4",
         "--max-model-len",
-        "131072",              # 128K — not 262K; 262K exhausts KV cache on single L40S
+        "131072",              
         "--max-num-batched-tokens",
         "131072",
+        "--disable-frontend-multiprocessing", # <--- ADD THIS LINE
     ]
-
 # ---------------------------------------------------------------------------
 # vLLM Server class with GPU memory snapshots (scales to zero)
 # ---------------------------------------------------------------------------
