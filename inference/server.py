@@ -194,10 +194,6 @@ vllm_image = (
             # Enable /sleep and /wake_up endpoints for GPU snapshot support.
             "VLLM_SERVER_DEV_MODE": "1",
             "TORCHINDUCTOR_COMPILE_THREADS": "1",
-            # Required for snapshot survival without NCCL socket crashes
-            "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
-            # Prevent NCCL from probing hardware topology across physical nodes
-            "NCCL_WARN_DISABLE": "1",
             # Keep vLLM logs at WARNING to reduce modal app logs noise
             "VLLM_LOGGING_LEVEL": "WARNING",
             # Model is baked into the image at build time; skip hub network calls at runtime
@@ -351,8 +347,6 @@ class Inference:
         # Keep existing vLLM env vars from image
         env.setdefault("VLLM_SERVER_DEV_MODE", "1")
         env.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
-        env.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
-        env.setdefault("NCCL_WARN_DISABLE", "1")
         env.setdefault("VLLM_LOGGING_LEVEL", "WARNING")
         env.setdefault("HF_HUB_OFFLINE", "1")
 
