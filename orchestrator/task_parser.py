@@ -1,9 +1,9 @@
 # orchestrator/task_parser.py
-"""Typed task decomposition.
+"""Typed task decomposition — TaskDAG and AtomicTaskNode schemas.
 
-Replaces frege_parser.py. Four task types with a discriminated union
-on task_type. validate_dag_types() enforces structural constraints on
-the declared dependency graph. All graph operations are O(V+E).
+Defines four task types (QueryTask, TransformTask, VerifyTask, ComposeTask)
+as a Pydantic discriminated union. validate_dag_types() enforces structural
+constraints on the declared dependency graph. All graph operations are O(V+E).
 """
 from __future__ import annotations
 import uuid

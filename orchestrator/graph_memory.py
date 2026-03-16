@@ -22,6 +22,7 @@ from llama_index.core.graph_stores import SimplePropertyGraphStore
 from llama_index.core.graph_stores.types import EntityNode, Relation
 from llama_index.core import Document, Settings
 from llama_index.core.embeddings import BaseEmbedding
+from llama_index.core.indices.property_graph import VectorContextRetriever
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +165,7 @@ class TriGraphMemory:
             (self.procedural, PROCEDURAL_PATH),
             (self.episodic, EPISODIC_PATH),
         ]:
-            data = nx.node_link_data(graph)
+            data = nx.node_link_data(graph, edges="edges")
             path.write_text(json.dumps(data, default=str))
         # Persist PropertyGraph (embeddings included) to avoid recomputation on load.
         if self.property_graph is not None:
@@ -232,7 +233,10 @@ class TriGraphMemory:
             ]:
                 if path.exists():
                     data = json.loads(path.read_text())
-                    setattr(mem, attr, nx.node_link_graph(data))
+                    # Normalise persisted data: files written before NX 3.4 used "links", not "edges"
+                    if "links" in data and "edges" not in data:
+                        data = {**data, "edges": data.pop("links")}
+                    setattr(mem, attr, nx.node_link_graph(data, edges="edges"))
 
             # Restore PropertyGraph from disk if available; otherwise rebuild from NX graphs.
             # Loading from disk avoids O(N) remote embedding calls on every cold load.
@@ -444,8 +448,7 @@ class TriGraphMemory:
             ):
                 query = str(attrs.get("description", ""))
                 try:
-                    pg = self._ensure_property_graph()
-                    retriever = pg.as_retriever(similarity_top_k=5)
+                    retriever = self.as_vector_retriever(similarity_top_k=5)
                     retrieved_nodes = retriever.retrieve(query)
                 except Exception as exc:
                     import logging
@@ -503,12 +506,22 @@ class TriGraphMemory:
 
         return "\n".join(parts) if parts else "(no context)"
 
+    def as_vector_retriever(self, similarity_top_k: int = 10):
+        """Return an explicit VectorContextRetriever. Never falls back to LLM synonym retrieval."""
+        pg = self._ensure_property_graph()
+        return VectorContextRetriever(
+            pg.property_graph_store,
+            embed_model=Settings.embed_model,
+            similarity_top_k=similarity_top_k,
+            path_depth=1,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         """Export all three graphs as a JSON-serializable dictionary."""
         return {
-            "semantic": nx.node_link_data(self.semantic),
-            "procedural": nx.node_link_data(self.procedural),
-            "episodic": nx.node_link_data(self.episodic),
+            "semantic": nx.node_link_data(self.semantic, edges="edges"),
+            "procedural": nx.node_link_data(self.procedural, edges="edges"),
+            "episodic": nx.node_link_data(self.episodic, edges="edges"),
         }
 
 def generate_interactive_graph_html(memory: TriGraphMemory) -> str:

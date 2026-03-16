@@ -1,14 +1,11 @@
-"""Rerank Engine — Qwen3-Reranker cross-encoder edge scoring.
+"""Rerank Engine — Qwen3-Reranker cross-encoder relevance scoring.
 
-Uses Qwen3-Reranker-0.6B to assess the relevance between task nodes
-(from the Frege-decomposed DAG) and candidate nodes from the three
-Knowledge Graphs (Semantic, Procedural, Episodic).
+Uses Qwen3-Reranker-0.6B to score the relevance between task descriptions
+(from the decomposed task DAG) and candidate nodes from the Semantic,
+Procedural, and Episodic knowledge graphs.
 
-Frege's compositionality principle is applied: scored edges encode
-contextual relevance, letting the agent loop derive task complexity
-and difficulty from the graph topology.
-
-Edges with score > ``EDGE_THRESHOLD`` are created.
+Scored edges above EDGE_THRESHOLD are returned. The agent loop uses these
+scores as the primary signal for task difficulty estimation (see difficulty.py).
 """
 
 from __future__ import annotations

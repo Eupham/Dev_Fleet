@@ -25,7 +25,7 @@ User Prompt
 │                                                      │
 │  ┌─────────────────────┐                             │
 │  │ Orchestrator (CPU)  │                             │
-│  │  Frege Parser       │──.remote()──▶ Inference     │
+│  │  Task Decomposer    │──.remote()──▶ Inference     │
 │  │  Graph Memory (NX)  │              (A100, vLLM)   │
 │  │  Agent Loop         │                             │
 │  │  Tool Sandbox       │──.remote()──▶ Reranker      │
@@ -44,7 +44,7 @@ Dev_Fleet/
 ├── orchestrator/
 │   ├── core_app.py          # run_agent function (CPU)
 │   ├── graph_memory.py      # Semantic / Procedural / Episodic graphs (NetworkX)
-│   ├── frege_parser.py      # Prompt → Task DAG decomposition (Pydantic)
+│   ├── task_parser.py       # Prompt → Task DAG decomposition (Pydantic)
 │   ├── rerank_engine.py     # Cross-encoder edge scoring logic
 │   ├── llm_client.py        # Thin wrapper for Modal-native inference calls
 │   ├── tool_sandbox.py      # Ephemeral Modal Sandbox execution
@@ -105,11 +105,13 @@ modal run tests/modal_test_runner.py
 
 ## Design Principles
 
-- **Frege's Compositionality**: Complex prompts are decomposed into a DAG of
-  atomic tasks using the 7B model. Each task declares `inputs_needed` and
-  `outputs_produced` so the DAG validator can check that the composition is
-  correctly ordered. Tasks are then scored against knowledge-graph nodes using
-  the Qwen3-Reranker.
+- **Structured Task Decomposition**: Complex prompts are decomposed by the LLM
+  into a typed DAG of atomic tasks (Query, Transform, Verify, Compose). The DAG
+  validator enforces acyclicity and type constraints on declared preconditions.
+  Post-execution, task dependencies are re-derived from observed filesystem
+  transitions (each task's actual writes and reads) — meaning is determined by
+  behavior, not declaration. Tasks are scored against knowledge-graph nodes by
+  the Qwen3-Reranker to estimate difficulty before execution.
 - **Tri-Graph Memory**: Three NetworkX digraphs (Semantic, Procedural,
   Episodic) provide structured context for every LLM call.
 - **Dedicated Reranker**: Qwen3-Reranker-0.6B cross-encoder assesses

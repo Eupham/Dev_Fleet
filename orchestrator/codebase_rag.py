@@ -40,7 +40,7 @@ def retrieve_codebase_node(state: dict) -> dict:
     memory = TriGraphMemory.load()
 
     try:
-        retriever = memory.property_graph.as_retriever(similarity_top_k=10)
+        retriever = memory.as_vector_retriever(similarity_top_k=10)
         retrieved_nodes = retriever.retrieve(state["user_prompt"])
     except Exception as exc:
         logger.warning("Codebase retrieval failed (%s). Proceeding with empty Mini-Map.", exc)

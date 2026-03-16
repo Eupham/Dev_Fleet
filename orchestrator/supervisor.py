@@ -6,7 +6,7 @@ Four intents are recognised:
   CONVERSATION    — greetings, questions, chat.  Handled by conversation_node.
   RESEARCH        — web research requests.  Routed to Research → Decompose.
   DECOMPOSE       — multi-step coding tasks.  Routed to Retrieve_Codebase → Decompose.
-  DIRECT_EXECUTE  — simple, single-step commands.  Bypasses Frege decomposition.
+  DIRECT_EXECUTE  — simple, single-step commands.  Bypasses LLM decomposition.
 """
 
 from __future__ import annotations
@@ -108,13 +108,13 @@ def conversation_node(state: "AgentState") -> dict:
 
 
 def direct_execute_node(state: "AgentState") -> dict:
-    """Bypass Frege decomposition and create a single-task DAG directly."""
+    """Bypass LLM decomposition and create a single-task DAG directly."""
     import logging
     from orchestrator.task_parser import AtomicTaskNode, TaskDAG, TransformTask
     from orchestrator.graph_memory import TriGraphMemory
 
     logger = logging.getLogger("dev_fleet.supervisor")
-    logger.info("Direct_Execute node bypassing Frege decomposition.")
+    logger.info("Direct_Execute node bypassing LLM decomposition.")
 
     single_task = TransformTask(
         id=uuid.uuid4().hex[:12],

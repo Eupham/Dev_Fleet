@@ -1,12 +1,20 @@
-"""Execution-Grounded Composition — observe filesystem changes, don't declare them.
+"""Execution-grounded composition via filesystem diffing.
 
-A task is a function from workspace state to workspace state. Rather than asking
-the model to declare its I/O contracts (which it does poorly), we observe them by
-diffing the sandbox filesystem before and after each task execution.
+Each task is modelled as a function from workspace state to workspace state.
+Its "meaning" in this domain is its StateDelta — the set of files it creates,
+modifies, or deletes. The dependency structure of a task pipeline is then
+derivable from those per-task transitions alone, without inspecting task
+internals (language, intent, or tooling).
 
-The composition type system is dynamic: each task is typed by its observed state
-transition. Composition is verified by execution. This is language-agnostic —
-it only observes the filesystem, which is the universal interface.
+This is Frege's compositionality principle applied to execution semantics:
+the structure of the composed pipeline (who depends on whom) is a function
+of the meanings of the parts (each task's observed state transition) and the
+combination rule (a → b if task a wrote a file that task b read).
+
+WorkspaceState.capture() snapshots the filesystem via sha256sum.
+StateDelta records created/deleted/modified files.
+CompositionLedger accumulates deltas and derives the dependency graph
+post-execution via derive_dependency_graph().
 """
 
 from __future__ import annotations
@@ -134,9 +142,10 @@ class CompositionLedger:
         """Derive the dependency graph from observed filesystem transitions.
 
         An edge a → b exists if task a wrote a file that task b read.
-        This is the Frege application: composition structure is derived from
-        the observed behavior of parts, not from declared contracts.
         """
+        # Frege's compositionality applied: the dependency structure of the pipeline
+        # is derived from each task's observed state transition (StateDelta), not
+        # from upfront declarations. Task meaning = filesystem effect.
         G = nx.DiGraph()
         tasks = list(self.deltas.keys())
         for tid in tasks:

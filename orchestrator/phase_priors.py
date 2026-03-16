@@ -69,15 +69,17 @@ def prior_difficulty(
     """Estimate difficulty in Phase 0 and Phase 1.
 
     Weights:
-      60% task type prior (structural)
+      75% structural prior (task type, implementation_depth, actor_capability —
+          depth_adj and actor_adj are folded into typed_prior before this call)
       25% compression signal (always available from description text)
-      15% depth + actor adjustments (from typed schema fields)
     """
     base = TASK_TYPE_PRIOR.get(task_type, 0.45)
     depth_adj = DEPTH_ADJUSTMENT.get(implementation_depth, 0.0)
     actor_adj = ACTOR_ADJUSTMENT.get(actor_capability, 0.0)
     typed_prior = min(1.0, base + depth_adj + actor_adj)
-    return min(1.0, 0.60 * typed_prior + 0.25 * compression + 0.15 * typed_prior)
+    # 75% structural prior (task type + depth + actor, all folded into typed_prior)
+    # 25% compression signal
+    return min(1.0, 0.75 * typed_prior + 0.25 * compression)
 
 
 def prior_tier(task_difficulty: float, current_tier: str = "moderate") -> str:
