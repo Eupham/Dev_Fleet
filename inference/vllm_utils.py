@@ -51,7 +51,7 @@ def build_vllm_image(model_id: str, is_nightly: bool = False) -> modal.Image:
         modal.Image.from_registry("nvidia/cuda:12.9.0-devel-ubuntu22.04", add_python="3.12")
         .entrypoint([])
         .add_local_python_source("fleet_app", copy=True)
-        .add_local_file("inference/vllm_config.toml", remote_path="/root/inference/vllm_config.toml")
+        .add_local_file("inference/vllm_config.toml", remote_path="/root/inference/vllm_config.toml", copy=True)
     )
     if is_nightly:
         img = img.add_local_python_source("orchestrator", copy=True).uv_pip_install(
