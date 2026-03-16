@@ -2,7 +2,7 @@
 trivial = "Qwen/Qwen3-4B"
 simple = "Qwen/Qwen3-8B"
 moderate = "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4"
-expert = "Qwen/Qwen3.5-32B"
+expert = "Qwen/Qwen3.5-27B"
 
 [trivial]
 served_model_name = "llm-small"
