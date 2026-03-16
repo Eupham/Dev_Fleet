@@ -665,12 +665,12 @@ def validate_node(state: AgentState) -> dict:
         )},
     ]
 
+    from pydantic import BaseModel
+
     class ValidationResult(BaseModel):
         satisfied: bool
         issues: list[str] = []
         corrective_tasks: list[str] = []
-
-    from pydantic import BaseModel
     try:
         result: ValidationResult = chat_completion(
             messages, temperature=0.2, max_tokens=1024, schema=ValidationResult

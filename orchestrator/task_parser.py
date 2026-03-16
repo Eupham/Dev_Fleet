@@ -98,13 +98,6 @@ def validate_dag_types(tasks: list) -> None:
         raise ValueError("Declared preconditions form a cycle.")
 
     for task in tasks:
-        if task.task_type == "verify":
-            pre_types = [id_to_type.get(p) for p in task.preconditions]
-            if "transform" not in pre_types:
-                raise ValueError(
-                    f"VerifyTask {task.id!r} must have >= 1 TransformTask "
-                    f"precondition. Got: {pre_types}."
-                )
         if task.task_type == "compose":
             for sub_id in task.sub_task_ids:
                 if sub_id not in id_to_type:

@@ -294,7 +294,6 @@ def _build_serve_cmd() -> list[str]:
         "131072",              
         "--max-num-batched-tokens",
         "131072",
-        "--disable-frontend-multiprocessing", # <--- ADD THIS LINE
     ]
 # ---------------------------------------------------------------------------
 # vLLM Server class with GPU memory snapshots (scales to zero)
@@ -348,6 +347,8 @@ class Inference:
         env.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
         env.setdefault("VLLM_LOGGING_LEVEL", "WARNING")
         env.setdefault("HF_HUB_OFFLINE", "1")
+        env.setdefault("TORCH_NCCL_ENABLE_MONITORING", "0")
+        env.setdefault("PYTHONWARNINGS", "ignore::FutureWarning")
 
         self.proc = subprocess.Popen(cmd, env=env)
         # Register the plain helper (not the @modal.exit method) to avoid
