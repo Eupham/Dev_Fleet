@@ -195,6 +195,8 @@ vllm_image = (
             "VLLM_LOGGING_LEVEL": "WARNING",
             # Model is baked into the image at build time; skip hub network calls at runtime
             "HF_HUB_OFFLINE": "1",
+            "NCCL_ASYNC_ERROR_HANDLING": "0",
+            "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0",
         }
     )
 )
@@ -344,6 +346,8 @@ class Inference:
         env.setdefault("VLLM_LOGGING_LEVEL", "WARNING")
         env.setdefault("HF_HUB_OFFLINE", "1")
         env.setdefault("TORCH_NCCL_ENABLE_MONITORING", "0")
+        env.setdefault("NCCL_ASYNC_ERROR_HANDLING", "0")
+        env.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "0")
         env.setdefault("PYTHONWARNINGS", "ignore::FutureWarning")
 
         self.proc = subprocess.Popen(cmd, env=env)
