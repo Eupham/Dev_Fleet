@@ -33,12 +33,15 @@ from fleet_app import app  # shared app defined in app.py
 # Constants
 # ---------------------------------------------------------------------------
 
-MINUTES = 60  # seconds
-VLLM_PORT = 8000
-N_GPU = 1
+from inference.vllm_utils import get_tier_config, build_vllm_image, wait_for_vllm, build_serve_cmd
+_cfg = get_tier_config("moderate")
 
-MODEL_NAME = "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4"
-SERVED_MODEL_NAME = "llm"  # short alias for all orchestrator calls
+MINUTES = 60
+VLLM_PORT = _cfg["port"]
+N_GPU = _cfg.get("tensor_parallel_size", 1)
+
+MODEL_NAME = _cfg["model"]
+SERVED_MODEL_NAME = _cfg["served_model_name"]
 
 # ---------------------------------------------------------------------------
 # VRAM Registry
@@ -163,47 +166,7 @@ def assert_vllm_supports_architecture(model_id: str) -> None:
 # Container image — vLLM nightly + HuggingFace tooling
 # ---------------------------------------------------------------------------
 
-vllm_image = (
-    modal.Image.from_registry(
-        "nvidia/cuda:12.9.0-devel-ubuntu22.04", add_python="3.12"
-    )
-    .entrypoint([])
-    .add_local_python_source("fleet_app", copy=True)
-    .add_local_python_source("orchestrator", copy=True)
-    # --torch-backend=cu129: explicit CUDA 12.9 backend matching the base image.
-    # "auto" fails during Modal image build because no GPU driver is present,
-    # causing uv to install CPU-only PyTorch (missing libtorch_cuda.so).
-    .uv_pip_install(
-        "vllm",
-        "hf_transfer",
-        "transformers>=4.53.0",
-        extra_options="--torch-backend=cu129 --extra-index-url https://wheels.vllm.ai/nightly",
-    )
-    .run_commands(
-        [
-            f"python -c \"from huggingface_hub import snapshot_download; snapshot_download('{MODEL_NAME}')\"",
-            f"HF_HUB_ENABLE_HF_TRANSFER=1 python -c \"from huggingface_hub import snapshot_download; snapshot_download('{MODEL_NAME}', allow_patterns=['*.json', '*.bin', '*.safetensors', '*.model'])\"",
-        ],
-        env={"HF_HUB_ENABLE_HF_TRANSFER": "1", "HF_XET_HIGH_PERFORMANCE": "1"},
-    )
-    .env(
-        {
-            # Enable /sleep and /wake_up endpoints for GPU snapshot support.
-            "VLLM_SERVER_DEV_MODE": "1",
-            "TORCHINDUCTOR_COMPILE_THREADS": "1",
-            # Keep vLLM logs at WARNING to reduce modal app logs noise
-            "VLLM_LOGGING_LEVEL": "WARNING",
-            # Model is baked into the image at build time; skip hub network calls at runtime
-            "HF_HUB_OFFLINE": "1",
-            "NCCL_ASYNC_ERROR_HANDLING": "0",
-            "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0",
-            "TORCH_NCCL_ENABLE_MONITORING": "0",
-            "TORCH_NCCL_DUMP_ON_TIMEOUT": "0",
-            "TORCH_FR_BUFFER_SIZE": "0",
-            "PYTHONWARNINGS": "ignore::FutureWarning",
-        }
-    )
-)
+vllm_image = build_vllm_image(MODEL_NAME, is_nightly=True)
 
 # Make `requests` importable inside the container for health-polling
 with vllm_image.imports():
@@ -219,35 +182,6 @@ vllm_cache_vol = modal.Volume.from_name("vllm-cache-vol", create_if_missing=True
 # ---------------------------------------------------------------------------
 # Snapshot helpers
 # ---------------------------------------------------------------------------
-
-def _wait_ready(proc: subprocess.Popen) -> None:
-    """
-    Poll until vLLM accepts connections or the process exits.
-    A crashed process is NOT retried. Connection refused while the process
-    is alive is treated as normal startup delay.
-
-    Timeout is configurable via VLLM_READY_TIMEOUT environment variable (seconds).
-    Default is 600s to allow for model loading + AOT compilation on large models.
-    """
-    timeout_s = int(os.environ.get("VLLM_READY_TIMEOUT", "600"))
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            raise RuntimeError(
-                f"vLLM exited with code {proc.returncode} during startup.\n"
-                "Do not retry with identical arguments — this failure is deterministic.\n"
-                "Check stdout/stderr above for the root cause."
-            )
-        try:
-            socket.create_connection(("localhost", VLLM_PORT), timeout=1).close()
-            return  # server is ready
-        except ConnectionRefusedError:
-            time.sleep(1)
-    proc.terminate()
-    raise TimeoutError(
-        f"vLLM did not become ready within {timeout_s}s. Process terminated."
-    )
-
 
 def _warmup() -> None:
     """Run a few inference requests to capture CUDA graphs before snapshot."""
@@ -265,39 +199,7 @@ def _warmup() -> None:
 
 
 def _build_serve_cmd() -> list[str]:
-    """Build the vLLM serve command for Qwen3.5-35B-A3B-GPTQ-Int4 on L40S."""
-    return [
-        "vllm",
-        "serve",
-        MODEL_NAME,
-        "--served-model-name",
-        SERVED_MODEL_NAME,
-        "--host",
-        "0.0.0.0",
-        "--port",
-        str(VLLM_PORT),
-        "--uvicorn-log-level=warning",
-        "--tensor-parallel-size",
-        str(N_GPU),
-        "--gpu-memory-utilization",
-        "0.85",
-        "--quantization",
-        "moe_wna16",           
-        "--language-model-only",   
-        "--reasoning-parser",
-        "qwen3",               
-        "--enable-auto-tool-choice",
-        "--tool-call-parser",
-        "qwen3_coder",
-        "--enable-sleep-mode",
-        "--dtype=bfloat16",    
-        "--max-num-seqs",
-        "32",
-        "--max-model-len",
-        "32768",              
-        "--max-num-batched-tokens",
-        "32768",
-    ]
+    return build_serve_cmd(_cfg)
 # ---------------------------------------------------------------------------
 # vLLM Server class with GPU memory snapshots (scales to zero)
 # ---------------------------------------------------------------------------
@@ -362,7 +264,7 @@ class Inference:
         # atexit before the cls machinery is fully initialised.
         atexit.register(self._terminate_proc)
         try:
-            _wait_ready(self.proc)
+            wait_for_vllm(self.proc, VLLM_PORT)
         except Exception:
             self._terminate_proc()
             raise
@@ -394,7 +296,7 @@ class Inference:
             timeout=120,
         )
         resp.raise_for_status()
-        _wait_ready(self.proc)
+        wait_for_vllm(self.proc, VLLM_PORT)
         print("[dev_fleet] Restored from snapshot — server live, no JIT compilation.")
 
     @modal.method()

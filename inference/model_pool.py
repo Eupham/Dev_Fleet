@@ -1,435 +1,153 @@
-"""Model Pool — Tier-based inference classes for difficulty routing.
-
-Each tier is a separate Modal cls with its own image, GPU type, and vLLM instance.
-The difficulty module maps task difficulty scores to tiers, and the llm_client
-routes to the appropriate class via modal.Cls.from_name.
-
-Tier → Model → Params → GPU:
-  trivial  → Qwen3-4B                     → 4B dense  → T4
-  simple   → Qwen3-8B                     → 8B dense  → T4
-  moderate → Qwen3.5-35B-A3B-GPTQ-Int4   → 3B active → L40S  (primary)
-  complex  → Qwen3.5-35B-A3B-GPTQ-Int4   → 3B active → L40S  (same as moderate)
-  expert   → Qwen3-32B                    → 32B dense → A100-80GB  (~64GB BF16)
-
-Note: moderate and complex share the same L40S instance (Qwen3.5-35B-A3B-GPTQ-Int4).
-The primary Inference class in server.py serves the moderate/complex tier.
-All models are ≤80B total parameters.
-"""
-
+"""Model Pool — Tier-based inference classes for difficulty routing."""
 from __future__ import annotations
-
 from typing import Any, Optional
 import modal
 from fleet_app import app
-
-MINUTES = 60
-VLLM_PORT = 8001  # Offset to avoid collision with primary Inference on 8000
+from inference.vllm_utils import get_tier_config, build_vllm_image, wait_for_vllm, build_serve_cmd
 
 # ---------------------------------------------------------------------------
-# Small tier — Qwen3-4B (T4 GPU, trivial tasks)
+# Trivial tier
 # ---------------------------------------------------------------------------
+_cfg_trivial = get_tier_config("trivial")
+_trivial_image = build_vllm_image(_cfg_trivial["model"], is_nightly=False)
 
-_SMALL_MODEL = "Qwen/Qwen3-4B"
-_SMALL_SERVED = "llm-small"
-
-_small_image = (
-    modal.Image.from_registry(
-        "nvidia/cuda:12.9.0-devel-ubuntu22.04", add_python="3.12"
-    )
-    .entrypoint([])
-    .add_local_python_source("fleet_app", copy=True)
-    .uv_pip_install("vllm==0.17.1", "hf_transfer")
-    .run_commands(
-        [f"python -c \"from huggingface_hub import snapshot_download; snapshot_download('{_SMALL_MODEL}')\"", f"HF_HUB_ENABLE_HF_TRANSFER=1 python -c \"from huggingface_hub import snapshot_download; snapshot_download('{_SMALL_MODEL}', allow_patterns=['*.json', '*.bin', '*.safetensors', '*.model'])\""],
-        env={"HF_HUB_ENABLE_HF_TRANSFER": "1"},
-    )
-    .env({
-        "VLLM_SERVER_DEV_MODE": "1",
-        "HF_HUB_OFFLINE": "1",
-        "VLLM_LOGGING_LEVEL": "WARNING",
-        "VLLM_ATTENTION_BACKEND": "XFORMERS",
-        "TORCH_NCCL_ENABLE_MONITORING": "0",
-        "TORCH_NCCL_DUMP_ON_TIMEOUT": "0",
-        "TORCH_FR_BUFFER_SIZE ": "0",
-        "NCCL_ASYNC_ERROR_HANDLING": "0",
-        "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0",
-        "PYTHONWARNINGS": "ignore::FutureWarning",
-    })
-)
-
-with _small_image.imports():
+with _trivial_image.imports():
     import requests as _requests_small
 
-
-def _build_small_serve_cmd() -> list[str]:
-    """Build the vLLM serve command for Qwen3-4B on T4.
-
-    T4 has CUDA compute capability 7.5 — bfloat16 is NOT supported.
-    Must use --dtype=half (float16).
-    """
-    return [
-        "vllm", "serve", _SMALL_MODEL,
-        "--served-model-name", _SMALL_SERVED,
-        "--host", "0.0.0.0", "--port", str(VLLM_PORT),
-        "--uvicorn-log-level=warning",
-        "--enable-sleep-mode",
-        "--dtype=half",      # T4 compute capability 7.5 — bfloat16 not supported
-        "--max-num-seqs", "8",
-        "--max-model-len", "8192",
-    ]
-
-
 @app.cls(
-    image=_small_image,
-    gpu="T4",
-    scaledown_window=2,
-    timeout=10 * MINUTES,
-    retries=0,
-    enable_memory_snapshot=True,
-    experimental_options={"enable_gpu_snapshot": True},
+    image=_trivial_image, gpu="T4", scaledown_window=2, timeout=10 * 60, retries=0,
+    enable_memory_snapshot=True, experimental_options={"enable_gpu_snapshot": True},
 )
 @modal.concurrent(max_inputs=50)
 class InferenceSmall:
-    """Qwen3-4B on T4 — trivial and simple tasks."""
-
     @modal.enter(snap=True)
     def start(self):
-        import subprocess, socket, time
-        import os as _os
-        _os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-        cmd = _build_small_serve_cmd()
-        self.proc = subprocess.Popen(cmd)
-        # Wait for ready
-        while True:
-            try:
-                socket.create_connection(("localhost", VLLM_PORT), timeout=1).close()
-                r = _requests_small.get(f"http://localhost:{VLLM_PORT}/health", timeout=5)
-                if r.status_code == 200:
-                    break
-            except Exception:
-                if self.proc.poll() is not None:
-                    raise RuntimeError(f"vLLM small exited: {self.proc.returncode}")
-                time.sleep(1)
-        # Warmup then sleep for snapshot
+        import subprocess, os
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        self.proc = subprocess.Popen(build_serve_cmd(_cfg_trivial))
+        wait_for_vllm(self.proc, _cfg_trivial["port"])
         _requests_small.post(
-            f"http://localhost:{VLLM_PORT}/v1/chat/completions",
-            json={"model": _SMALL_SERVED, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8},
+            f"http://localhost:{_cfg_trivial['port']}/v1/chat/completions",
+            json={"model": _cfg_trivial['served_model_name'], "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8},
             timeout=120,
         )
-        _requests_small.post(f"http://localhost:{VLLM_PORT}/sleep?level=1", timeout=60).raise_for_status()
+        _requests_small.post(f"http://localhost:{_cfg_trivial['port']}/sleep?level=1", timeout=60).raise_for_status()
 
     @modal.enter(snap=False)
     def restore(self):
-        _requests_small.post(f"http://localhost:{VLLM_PORT}/wake_up", timeout=120).raise_for_status()
+        _requests_small.post(f"http://localhost:{_cfg_trivial['port']}/wake_up", timeout=120).raise_for_status()
 
     @modal.method()
-    def generate(
-        self,
-        messages: list[dict],
-        model: str = _SMALL_SERVED,
-        temperature: float = 0.3,
-        max_tokens: int = 2048,
-        schema: Optional[Any] = None,
-    ) -> Any:
-        import json as _json
-        payload = {
-            "model": model or _SMALL_SERVED,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
+    def generate(self, messages: list[dict], model: str = None, temperature: float = 0.3, max_tokens: int = 2048, schema: Optional[Any] = None) -> Any:
+        payload = {"model": model or _cfg_trivial['served_model_name'], "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
         if schema:
-            payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {"name": schema.__name__, "schema": schema.model_json_schema()},
-            }
+            payload["response_format"] = {"type": "json_schema", "json_schema": {"name": schema.__name__, "schema": schema.model_json_schema()}}
             payload["tool_choice"] = "none"
-        resp = _requests_small.post(
-            f"http://localhost:{VLLM_PORT}/v1/chat/completions", json=payload
-        )
+        resp = _requests_small.post(f"http://localhost:{_cfg_trivial['port']}/v1/chat/completions", json=payload)
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"].get("content")
         if schema:
-            content = content or "{}"
-            try:
-                return schema.model_validate_json(content)
-            except Exception as e:
-                print(f"[dev_fleet] Schema validation failed: {e}. Raw content: {content}")
-                return schema.model_construct()
+            try: return schema.model_validate_json(content or "{}")
+            except Exception: return schema.model_construct()
         return content
 
     @modal.exit()
-    def stop(self):
-        self.proc.terminate()
-
+    def stop(self): self.proc.terminate()
 
 # ---------------------------------------------------------------------------
-# Medium tier — Qwen3-8B (T4 GPU, simple tasks)
+# Simple tier
 # ---------------------------------------------------------------------------
+_cfg_simple = get_tier_config("simple")
+_simple_image = build_vllm_image(_cfg_simple["model"], is_nightly=False)
 
-_MEDIUM_MODEL = "Qwen/Qwen3-8B"
-_MEDIUM_SERVED = "llm-medium"
-_MEDIUM_PORT = 8002
-
-_medium_image = (
-    modal.Image.from_registry(
-        "nvidia/cuda:12.9.0-devel-ubuntu22.04", add_python="3.12"
-    )
-    .entrypoint([])
-    .add_local_python_source("fleet_app", copy=True)
-    .uv_pip_install("vllm==0.17.1", "hf_transfer")
-    .run_commands(
-        [f"python -c \"from huggingface_hub import snapshot_download; snapshot_download('{_MEDIUM_MODEL}')\"", f"HF_HUB_ENABLE_HF_TRANSFER=1 python -c \"from huggingface_hub import snapshot_download; snapshot_download('{_MEDIUM_MODEL}', allow_patterns=['*.json', '*.bin', '*.safetensors', '*.model'])\""],
-        env={"HF_HUB_ENABLE_HF_TRANSFER": "1"},
-    )
-    .env({
-        "VLLM_SERVER_DEV_MODE": "1",
-        "HF_HUB_OFFLINE": "1",
-        "VLLM_LOGGING_LEVEL": "WARNING",
-        "TORCH_NCCL_ENABLE_MONITORING": "0",
-        "TORCH_NCCL_DUMP_ON_TIMEOUT": "0",
-        "TORCH_FR_BUFFER_SIZE ": "0",
-        "NCCL_ASYNC_ERROR_HANDLING": "0",
-        "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0",
-        "PYTHONWARNINGS": "ignore::FutureWarning",
-    })
-)
-
-with _medium_image.imports():
+with _simple_image.imports():
     import requests as _requests_medium
 
-
-def _build_medium_serve_cmd() -> list[str]:
-    """Build the vLLM serve command for Qwen3-8B on A10G.
-
-    Upgraded from T4 (16GB) to A10G (24GB): Qwen3-8B requires ~16GB in fp16,
-    leaving no headroom for KV cache on T4, causing CUDA OOM.
-    A10G has CUDA compute capability 8.6 — bfloat16 IS supported.
-    """
-    return [
-        "vllm", "serve", _MEDIUM_MODEL,
-        "--served-model-name", _MEDIUM_SERVED,
-        "--host", "0.0.0.0", "--port", str(_MEDIUM_PORT),
-        "--uvicorn-log-level=warning",
-        "--enable-sleep-mode",
-        "--dtype=bfloat16",  # Upgraded to A10G — bfloat16 is supported
-        "--max-num-seqs", "4",
-        "--max-model-len", "8192",
-    ]
-
-
 @app.cls(
-    image=_medium_image,
-    gpu="A10G",
-    scaledown_window=2,
-    timeout=10 * MINUTES,
-    retries=0,
-    enable_memory_snapshot=True,
-    experimental_options={"enable_gpu_snapshot": True},
+    image=_simple_image, gpu="A10G", scaledown_window=2, timeout=10 * 60, retries=0,
+    enable_memory_snapshot=True, experimental_options={"enable_gpu_snapshot": True},
 )
 @modal.concurrent(max_inputs=30)
 class InferenceMedium:
-    """Qwen3-8B on A10G (24GB VRAM) — simple tasks. Upgraded from T4 due to OOM issues."""
-
     @modal.enter(snap=True)
     def start(self):
-        import subprocess, socket, time
-        import os as _os
-        _os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-        cmd = _build_medium_serve_cmd()
-        self.proc = subprocess.Popen(cmd)
-        while True:
-            try:
-                socket.create_connection(("localhost", _MEDIUM_PORT), timeout=1).close()
-                r = _requests_medium.get(f"http://localhost:{_MEDIUM_PORT}/health", timeout=5)
-                if r.status_code == 200:
-                    break
-            except Exception:
-                if self.proc.poll() is not None:
-                    raise RuntimeError(f"vLLM medium exited: {self.proc.returncode}")
-                time.sleep(1)
+        import subprocess, os
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        self.proc = subprocess.Popen(build_serve_cmd(_cfg_simple))
+        wait_for_vllm(self.proc, _cfg_simple["port"])
         _requests_medium.post(
-            f"http://localhost:{_MEDIUM_PORT}/v1/chat/completions",
-            json={"model": _MEDIUM_SERVED, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8},
+            f"http://localhost:{_cfg_simple['port']}/v1/chat/completions",
+            json={"model": _cfg_simple['served_model_name'], "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8},
             timeout=120,
         )
-        _requests_medium.post(f"http://localhost:{_MEDIUM_PORT}/sleep?level=1", timeout=60).raise_for_status()
+        _requests_medium.post(f"http://localhost:{_cfg_simple['port']}/sleep?level=1", timeout=60).raise_for_status()
 
     @modal.enter(snap=False)
     def restore(self):
-        _requests_medium.post(f"http://localhost:{_MEDIUM_PORT}/wake_up", timeout=120).raise_for_status()
+        _requests_medium.post(f"http://localhost:{_cfg_simple['port']}/wake_up", timeout=120).raise_for_status()
 
     @modal.method()
-    def generate(
-        self,
-        messages: list[dict],
-        model: str = _MEDIUM_SERVED,
-        temperature: float = 0.3,
-        max_tokens: int = 4096,
-        schema: Optional[Any] = None,
-    ) -> Any:
-        payload = {
-            "model": model or _MEDIUM_SERVED,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
+    def generate(self, messages: list[dict], model: str = None, temperature: float = 0.3, max_tokens: int = 4096, schema: Optional[Any] = None) -> Any:
+        payload = {"model": model or _cfg_simple['served_model_name'], "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
         if schema:
-            payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {"name": schema.__name__, "schema": schema.model_json_schema()},
-            }
+            payload["response_format"] = {"type": "json_schema", "json_schema": {"name": schema.__name__, "schema": schema.model_json_schema()}}
             payload["tool_choice"] = "none"
-        resp = _requests_medium.post(
-            f"http://localhost:{_MEDIUM_PORT}/v1/chat/completions", json=payload
-        )
+        resp = _requests_medium.post(f"http://localhost:{_cfg_simple['port']}/v1/chat/completions", json=payload)
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"].get("content")
         if schema:
-            content = content or "{}"
-            try:
-                return schema.model_validate_json(content)
-            except Exception as e:
-                print(f"[dev_fleet] Schema validation failed: {e}. Raw content: {content}")
-                return schema.model_construct()
+            try: return schema.model_validate_json(content or "{}")
+            except Exception: return schema.model_construct()
         return content
 
     @modal.exit()
-    def stop(self):
-        self.proc.terminate()
-
+    def stop(self): self.proc.terminate()
 
 # ---------------------------------------------------------------------------
-# Large tier — Qwen3-32B (A100-80GB, expert tasks)
-# 32B dense model fits on a single A100-80GB in BF16 (~64GB VRAM).
+# Expert tier
 # ---------------------------------------------------------------------------
+_cfg_expert = get_tier_config("expert")
+_expert_image = build_vllm_image(_cfg_expert["model"], is_nightly=False)
 
-_LARGE_MODEL = "Qwen/Qwen3-32B"
-_LARGE_SERVED = "llm-large"
-_LARGE_PORT = 8003
-
-_large_image = (
-    modal.Image.from_registry(
-        "nvidia/cuda:12.9.0-devel-ubuntu22.04", add_python="3.12"
-    )
-    .entrypoint([])
-    .add_local_python_source("fleet_app", copy=True)
-    .uv_pip_install("vllm==0.17.1", "hf_transfer")
-    .run_commands(
-        [f"python -c \"from huggingface_hub import snapshot_download; snapshot_download('{_LARGE_MODEL}')\"", f"HF_HUB_ENABLE_HF_TRANSFER=1 python -c \"from huggingface_hub import snapshot_download; snapshot_download('{_LARGE_MODEL}', allow_patterns=['*.json', '*.bin', '*.safetensors', '*.model'])\""],
-        env={"HF_HUB_ENABLE_HF_TRANSFER": "1"},
-    )
-    .env({
-        "VLLM_SERVER_DEV_MODE": "1",
-        "HF_HUB_OFFLINE": "1",
-        "VLLM_LOGGING_LEVEL": "WARNING",
-        "TORCH_NCCL_ENABLE_MONITORING": "0",
-        "TORCH_NCCL_DUMP_ON_TIMEOUT": "0",
-        "TORCH_FR_BUFFER_SIZE ": "0",
-        "NCCL_ASYNC_ERROR_HANDLING": "0",
-        "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0",
-        "PYTHONWARNINGS": "ignore::FutureWarning",
-    })
-)
-
-with _large_image.imports():
+with _expert_image.imports():
     import requests as _requests_large
 
-
-def _build_large_serve_cmd() -> list[str]:
-    """Build the vLLM serve command for Qwen3-32B on A100-80GB.
-
-    A100-80GB has CUDA compute capability 8.0 — bfloat16 IS supported.
-    32B dense BF16 model fits in ~64 GB on a single A100-80GB.
-    """
-    return [
-        "vllm", "serve", _LARGE_MODEL,
-        "--served-model-name", _LARGE_SERVED,
-        "--host", "0.0.0.0", "--port", str(_LARGE_PORT),
-        "--uvicorn-log-level=warning",
-        "--enable-sleep-mode",
-        "--dtype=bfloat16",  # A100 compute capability 8.0 — bfloat16 supported
-        "--max-num-seqs", "2",
-        "--max-model-len", "8192",
-    ]
-
-
 @app.cls(
-    image=_large_image,
-    gpu="A100-80GB",
-    scaledown_window=2,
-    timeout=20 * MINUTES,
-    retries=0,
-    enable_memory_snapshot=True,
-    experimental_options={"enable_gpu_snapshot": True},
+    image=_expert_image, gpu="A100-80GB", scaledown_window=2, timeout=20 * 60, retries=0,
+    enable_memory_snapshot=True, experimental_options={"enable_gpu_snapshot": True},
 )
 @modal.concurrent(max_inputs=10)
 class InferenceLarge:
-    """Qwen3-32B on A100-80GB — expert tasks (32B dense, ~64GB BF16)."""
-
     @modal.enter(snap=True)
     def start(self):
-        import subprocess, socket, time
-        import os as _os
-        _os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-        cmd = _build_large_serve_cmd()
-        self.proc = subprocess.Popen(cmd)
-        while True:
-            try:
-                socket.create_connection(("localhost", _LARGE_PORT), timeout=1).close()
-                r = _requests_large.get(f"http://localhost:{_LARGE_PORT}/health", timeout=5)
-                if r.status_code == 200:
-                    break
-            except Exception:
-                if self.proc.poll() is not None:
-                    raise RuntimeError(f"vLLM large exited: {self.proc.returncode}")
-                time.sleep(1)
+        import subprocess, os
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        self.proc = subprocess.Popen(build_serve_cmd(_cfg_expert))
+        wait_for_vllm(self.proc, _cfg_expert["port"])
         _requests_large.post(
-            f"http://localhost:{_LARGE_PORT}/v1/chat/completions",
-            json={"model": _LARGE_SERVED, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8},
+            f"http://localhost:{_cfg_expert['port']}/v1/chat/completions",
+            json={"model": _cfg_expert['served_model_name'], "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8},
             timeout=300,
         )
-        _requests_large.post(f"http://localhost:{_LARGE_PORT}/sleep?level=1", timeout=120).raise_for_status()
+        _requests_large.post(f"http://localhost:{_cfg_expert['port']}/sleep?level=1", timeout=120).raise_for_status()
 
     @modal.enter(snap=False)
     def restore(self):
-        _requests_large.post(f"http://localhost:{_LARGE_PORT}/wake_up", timeout=180).raise_for_status()
+        _requests_large.post(f"http://localhost:{_cfg_expert['port']}/wake_up", timeout=180).raise_for_status()
 
     @modal.method()
-    def generate(
-        self,
-        messages: list[dict],
-        model: str = _LARGE_SERVED,
-        temperature: float = 0.3,
-        max_tokens: int = 8192,
-        schema: Optional[Any] = None,
-    ) -> Any:
-        payload = {
-            "model": model or _LARGE_SERVED,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
+    def generate(self, messages: list[dict], model: str = None, temperature: float = 0.3, max_tokens: int = 8192, schema: Optional[Any] = None) -> Any:
+        payload = {"model": model or _cfg_expert['served_model_name'], "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
         if schema:
-            payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {"name": schema.__name__, "schema": schema.model_json_schema()},
-            }
+            payload["response_format"] = {"type": "json_schema", "json_schema": {"name": schema.__name__, "schema": schema.model_json_schema()}}
             payload["tool_choice"] = "none"
-        resp = _requests_large.post(
-            f"http://localhost:{_LARGE_PORT}/v1/chat/completions", json=payload
-        )
+        resp = _requests_large.post(f"http://localhost:{_cfg_expert['port']}/v1/chat/completions", json=payload)
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"].get("content")
         if schema:
-            content = content or "{}"
-            try:
-                return schema.model_validate_json(content)
-            except Exception as e:
-                print(f"[dev_fleet] Schema validation failed: {e}. Raw content: {content}")
-                return schema.model_construct()
+            try: return schema.model_validate_json(content or "{}")
+            except Exception: return schema.model_construct()
         return content
 
     @modal.exit()
-    def stop(self):
-        self.proc.terminate()
+    def stop(self): self.proc.terminate()

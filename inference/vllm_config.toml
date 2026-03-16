@@ -1,0 +1,41 @@
+[models]
+trivial = "Qwen/Qwen3-4B"
+simple = "Qwen/Qwen3-8B"
+moderate = "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4"
+expert = "Qwen/Qwen3.5-32B"
+
+[trivial]
+served_model_name = "llm-small"
+port = 8001
+dtype = "half"
+max_num_seqs = 8
+max_model_len = 8192
+
+[simple]
+served_model_name = "llm-medium"
+port = 8002
+dtype = "bfloat16"
+max_num_seqs = 4
+max_model_len = 8192
+
+[moderate]
+served_model_name = "llm"
+port = 8000
+tensor_parallel_size = 1
+gpu_memory_utilization = 0.85
+quantization = "moe_wna16"
+language_model_only = true
+reasoning_parser = "qwen3"
+enable_auto_tool_choice = true
+tool_call_parser = "qwen3_coder"
+dtype = "bfloat16"
+max_num_seqs = 32
+max_model_len = 32768
+max_num_batched_tokens = 32768
+
+[expert]
+served_model_name = "llm-large"
+port = 8003
+dtype = "bfloat16"
+max_num_seqs = 2
+max_model_len = 8192
