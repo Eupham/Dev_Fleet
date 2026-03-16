@@ -157,7 +157,7 @@ def test_model_dtype_config() -> str:
     """Test that each vLLM serve command uses the correct dtype for its GPU.
 
     T4 (compute capability 7.5) does NOT support bfloat16 — must use float16.
-    L40S (cc 8.9) and A100-80GB (cc 8.0) support bfloat16 — should use it.
+    A10G (cc 8.6), L40S (cc 8.9) and A100-80GB (cc 8.0) support bfloat16 — should use it.
     """
     sys.path.insert(0, "/root")
     from inference.server import _build_serve_cmd
@@ -170,15 +170,15 @@ def test_model_dtype_config() -> str:
     # T4 models — must NOT use bfloat16
     for name, cmd_fn in [
         ("InferenceSmall (T4)", _build_small_serve_cmd),
-        ("InferenceMedium (T4)", _build_medium_serve_cmd),
     ]:
         cmd = cmd_fn()
         assert "--dtype=half" in cmd, f"{name}: missing --dtype=half"
         assert "--dtype=bfloat16" not in cmd, f"{name}: bfloat16 not supported on T4 (cc 7.5)"
 
-    # L40S / A100-80GB models — bfloat16 is valid (cc ≥ 8.0)
+    # A10G / L40S / A100-80GB models — bfloat16 is valid (cc ≥ 8.0)
     for name, cmd_fn in [
         ("Inference (L40S)", _build_serve_cmd),
+        ("InferenceMedium (A10G)", _build_medium_serve_cmd),
         ("InferenceLarge (A100-80GB)", _build_large_serve_cmd),
     ]:
         cmd = cmd_fn()

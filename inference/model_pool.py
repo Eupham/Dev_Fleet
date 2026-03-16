@@ -69,6 +69,7 @@ def _build_small_serve_cmd() -> list[str]:
         "--dtype=half",      # T4 compute capability 7.5 — bfloat16 not supported
         "--max-num-seqs", "8",
         "--max-model-len", "8192",
+        "--disable-frontend-multiprocessing",
     ]
 
 
@@ -181,10 +182,11 @@ with _medium_image.imports():
 
 
 def _build_medium_serve_cmd() -> list[str]:
-    """Build the vLLM serve command for Qwen3-8B on T4.
+    """Build the vLLM serve command for Qwen3-8B on A10G.
 
-    T4 has CUDA compute capability 7.5 — bfloat16 is NOT supported.
-    Must use --dtype=half (float16).
+    Upgraded from T4 (16GB) to A10G (24GB): Qwen3-8B requires ~16GB in fp16,
+    leaving no headroom for KV cache on T4, causing CUDA OOM.
+    A10G has CUDA compute capability 8.6 — bfloat16 IS supported.
     """
     return [
         "vllm", "serve", _MEDIUM_MODEL,
@@ -192,15 +194,16 @@ def _build_medium_serve_cmd() -> list[str]:
         "--host", "0.0.0.0", "--port", str(_MEDIUM_PORT),
         "--uvicorn-log-level=warning",
         "--enable-sleep-mode",
-        "--dtype=half",      # T4 compute capability 7.5 — bfloat16 not supported
+        "--dtype=bfloat16",  # Upgraded to A10G — bfloat16 is supported
         "--max-num-seqs", "4",
         "--max-model-len", "8192",
+        "--disable-frontend-multiprocessing",
     ]
 
 
 @app.cls(
     image=_medium_image,
-    gpu="T4",
+    gpu="A10G",
     scaledown_window=2,
     timeout=10 * MINUTES,
     retries=0,
@@ -209,7 +212,7 @@ def _build_medium_serve_cmd() -> list[str]:
 )
 @modal.concurrent(max_inputs=30)
 class InferenceMedium:
-    """Qwen3-8B on T4 — simple tasks."""
+    """Qwen3-8B on A10G (24GB VRAM) — simple tasks. Upgraded from T4 due to OOM issues."""
 
     @modal.enter(snap=True)
     def start(self):
@@ -319,6 +322,7 @@ def _build_large_serve_cmd() -> list[str]:
         "--dtype=bfloat16",  # A100 compute capability 8.0 — bfloat16 supported
         "--max-num-seqs", "2",
         "--max-model-len", "8192",
+        "--disable-frontend-multiprocessing",
     ]
 
 
