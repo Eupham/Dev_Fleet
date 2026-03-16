@@ -185,7 +185,7 @@ vllm_image = (
     )
     .run_commands(
         [
-            f"huggingface-cli download {MODEL_NAME}",
+            f"python -c \"from huggingface_hub import snapshot_download; snapshot_download('{MODEL_NAME}')\"",
         ],
         env={"HF_HUB_ENABLE_HF_TRANSFER": "1", "HF_XET_HIGH_PERFORMANCE": "1"},
     )
