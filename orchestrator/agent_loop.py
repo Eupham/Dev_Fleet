@@ -905,6 +905,14 @@ async def agent_loop_stream(user_prompt: str) -> AsyncIterator[dict]:
     run_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": run_id}}
 
+    # Steps that call memory.save() — only reload from disk after these.
+    _MEMORY_WRITING_STEPS = frozenset({
+        "Decompose", "Rerank_and_Retrieve", "Execute",
+        "Handle_Failure", "Collect_Outputs", "Validate",
+    })
+
+    cached_graphs: dict = TriGraphMemory.load().to_dict()
+
     async for s in graph.astream(initial_state, config=config):
         node_name = list(s.keys())[0]
         s_update = s[node_name]
@@ -926,11 +934,12 @@ async def agent_loop_stream(user_prompt: str) -> AsyncIterator[dict]:
             "retry_discourse_state": full_state.get("retry_discourse_state", {}),
             "tasks_completed_count": full_state.get("tasks_completed_count", 0),
         }
-        memory = TriGraphMemory.load()
+        if node_name in _MEMORY_WRITING_STEPS:
+            cached_graphs = TriGraphMemory.load().to_dict()
         yield {
             "step": node_name,
             "state_snapshot": safe_state,
-            "graphs": memory.to_dict(),
+            "graphs": cached_graphs,
             "node_update": s_update,
         }
 

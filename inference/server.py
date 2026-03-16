@@ -412,42 +412,31 @@ class Inference:
         the generated text directly.  No external HTTP round-trip.
         If a Pydantic schema is provided, uses vLLM's native JSON mode to constrain the output.
         """
+        payload: dict = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
         if schema:
-            payload = {
-                "model": model,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": schema.__name__,
-                        "schema": schema.model_json_schema(),
-                    }
-                }
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema.__name__,
+                    "schema": schema.model_json_schema(),
+                },
             }
-            resp = requests.post(
-                f"http://localhost:{VLLM_PORT}/v1/chat/completions",
-                json=payload,
-            )
-            resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"]
-            # Validate and return the Pydantic model directly
-            return schema.model_validate_json(content)
 
-        else:
-            payload = {
-                "model": model,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
-            resp = requests.post(
-                f"http://localhost:{VLLM_PORT}/v1/chat/completions",
-                json=payload,
-            )
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+        resp = requests.post(
+            f"http://localhost:{VLLM_PORT}/v1/chat/completions",
+            json=payload,
+            timeout=300,
+        )
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"]
+        if schema:
+            return schema.model_validate_json(content)
+        return content
 
     @modal.web_server(port=VLLM_PORT, startup_timeout=10 * MINUTES)
     def serve(self):
