@@ -26,7 +26,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-@dataclass(frozen=True)
 from pydantic import BaseModel, Field
 class Witness(BaseModel):
     """An MLTT proof term: proves a postcondition is satisfied via a hash."""
