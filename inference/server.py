@@ -423,6 +423,8 @@ class Inference:
                     "schema": schema.model_json_schema(),
                 },
             }
+            # Force the model to output text, preventing rogue tool calls
+            payload["tool_choice"] = "none"
 
         resp = requests.post(
             f"http://localhost:{VLLM_PORT}/v1/chat/completions",
@@ -430,8 +432,10 @@ class Inference:
             timeout=300,
         )
         resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
+        content = resp.json()["choices"][0]["message"].get("content")
         if schema:
+            # Fallback to empty JSON if content is somehow still None
+            content = content or "{}"
             return schema.model_validate_json(content)
         return content
 
