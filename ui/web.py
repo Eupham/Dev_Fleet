@@ -14,21 +14,12 @@ web_image = (
     .add_local_python_source("orchestrator", copy=True)
     .add_local_python_source("inference", copy=True)
     .add_local_python_source("ui", copy=True)
-    .add_local_file("fix_chainlit.py", "/root/fix_chainlit.py", copy=True)
+    .env({"CHAINLIT_USER_ENV": "DUMMY_ENV_TO_PREVENT_NULL_CRASH"})
     .add_local_dir(".chainlit", remote_path="/root/.chainlit", copy=True)
     .add_local_dir("public", remote_path="/root/public", copy=True)
 )
 
 try:
-    import sys
-    import os
-    # Apply Chainlit monkey-patch before importing chainlit proper
-    sys.path.insert(0, "/root")
-    try:
-        import fix_chainlit  # noqa: F401 — applies patch on import
-    except ImportError:
-        pass
-
     import chainlit as cl
     import orjson
 
