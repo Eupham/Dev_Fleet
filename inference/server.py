@@ -351,7 +351,7 @@ class Inference:
         env.setdefault("HF_HUB_OFFLINE", "1")
         env.setdefault("TORCH_NCCL_ENABLE_MONITORING", "0")
         env.setdefault("TORCH_NCCL_DUMP_ON_TIMEOUT", "0")
-        env.setdefault("TORCH_NCCL_TRACE_BUFFER_SIZE", "0")
+        env.setdefault("TORCH_FR_BUFFER_SIZE ", "0")
         env.setdefault("NCCL_ASYNC_ERROR_HANDLING", "0")
         env.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "0")
         env.setdefault("PYTHONWARNINGS", "ignore::FutureWarning")
