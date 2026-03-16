@@ -54,6 +54,24 @@ with _small_image.imports():
     import requests as _requests_small
 
 
+def _build_small_serve_cmd() -> list[str]:
+    """Build the vLLM serve command for Qwen3-4B on T4.
+
+    T4 has CUDA compute capability 7.5 — bfloat16 is NOT supported.
+    Must use --dtype=half (float16).
+    """
+    return [
+        "vllm", "serve", _SMALL_MODEL,
+        "--served-model-name", _SMALL_SERVED,
+        "--host", "0.0.0.0", "--port", str(VLLM_PORT),
+        "--uvicorn-log-level=warning",
+        "--enable-sleep-mode",
+        "--dtype=half",      # T4 compute capability 7.5 — bfloat16 not supported
+        "--max-num-seqs", "8",
+        "--max-model-len", "8192",
+    ]
+
+
 @app.cls(
     image=_small_image,
     gpu="T4",
@@ -72,16 +90,7 @@ class InferenceSmall:
         import subprocess, socket, time
         import os as _os
         _os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-        cmd = [
-            "vllm", "serve", _SMALL_MODEL,
-            "--served-model-name", _SMALL_SERVED,
-            "--host", "0.0.0.0", "--port", str(VLLM_PORT),
-            "--uvicorn-log-level=warning",
-            "--enable-sleep-mode",
-            "--dtype=half",
-            "--max-num-seqs", "8",
-            "--max-model-len", "8192",
-        ]
+        cmd = _build_small_serve_cmd()
         self.proc = subprocess.Popen(cmd)
         # Wait for ready
         while True:
@@ -171,6 +180,24 @@ with _medium_image.imports():
     import requests as _requests_medium
 
 
+def _build_medium_serve_cmd() -> list[str]:
+    """Build the vLLM serve command for Qwen3-8B on T4.
+
+    T4 has CUDA compute capability 7.5 — bfloat16 is NOT supported.
+    Must use --dtype=half (float16).
+    """
+    return [
+        "vllm", "serve", _MEDIUM_MODEL,
+        "--served-model-name", _MEDIUM_SERVED,
+        "--host", "0.0.0.0", "--port", str(_MEDIUM_PORT),
+        "--uvicorn-log-level=warning",
+        "--enable-sleep-mode",
+        "--dtype=half",      # T4 compute capability 7.5 — bfloat16 not supported
+        "--max-num-seqs", "4",
+        "--max-model-len", "8192",
+    ]
+
+
 @app.cls(
     image=_medium_image,
     gpu="T4",
@@ -189,16 +216,7 @@ class InferenceMedium:
         import subprocess, socket, time
         import os as _os
         _os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-        cmd = [
-            "vllm", "serve", _MEDIUM_MODEL,
-            "--served-model-name", _MEDIUM_SERVED,
-            "--host", "0.0.0.0", "--port", str(_MEDIUM_PORT),
-            "--uvicorn-log-level=warning",
-            "--enable-sleep-mode",
-            "--dtype=half",
-            "--max-num-seqs", "4",
-            "--max-model-len", "8192",
-        ]
+        cmd = _build_medium_serve_cmd()
         self.proc = subprocess.Popen(cmd)
         while True:
             try:
@@ -286,6 +304,24 @@ with _large_image.imports():
     import requests as _requests_large
 
 
+def _build_large_serve_cmd() -> list[str]:
+    """Build the vLLM serve command for Qwen3-32B on A100-80GB.
+
+    A100-80GB has CUDA compute capability 8.0 — bfloat16 IS supported.
+    32B dense BF16 model fits in ~64 GB on a single A100-80GB.
+    """
+    return [
+        "vllm", "serve", _LARGE_MODEL,
+        "--served-model-name", _LARGE_SERVED,
+        "--host", "0.0.0.0", "--port", str(_LARGE_PORT),
+        "--uvicorn-log-level=warning",
+        "--enable-sleep-mode",
+        "--dtype=bfloat16",  # A100 compute capability 8.0 — bfloat16 supported
+        "--max-num-seqs", "2",
+        "--max-model-len", "8192",
+    ]
+
+
 @app.cls(
     image=_large_image,
     gpu="A100-80GB",
@@ -304,16 +340,7 @@ class InferenceLarge:
         import subprocess, socket, time
         import os as _os
         _os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-        cmd = [
-            "vllm", "serve", _LARGE_MODEL,
-            "--served-model-name", _LARGE_SERVED,
-            "--host", "0.0.0.0", "--port", str(_LARGE_PORT),
-            "--uvicorn-log-level=warning",
-            "--enable-sleep-mode",
-            "--dtype=bfloat16",
-            "--max-num-seqs", "2",
-            "--max-model-len", "8192",
-        ]
+        cmd = _build_large_serve_cmd()
         self.proc = subprocess.Popen(cmd)
         while True:
             try:

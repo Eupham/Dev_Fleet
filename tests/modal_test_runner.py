@@ -152,6 +152,64 @@ def test_sandbox_result() -> str:
     return "✓ test_sandbox_result passed (2 assertions)"
 
 
+@app.function(image=test_image, timeout=120)
+def test_model_dtype_config() -> str:
+    """Test that each vLLM serve command uses the correct dtype for its GPU.
+
+    T4 (compute capability 7.5) does NOT support bfloat16 — must use float16.
+    L40S (cc 8.9) and A100-80GB (cc 8.0) support bfloat16 — should use it.
+    """
+    sys.path.insert(0, "/root")
+    from inference.server import _build_serve_cmd
+    from inference.model_pool import (
+        _build_small_serve_cmd,
+        _build_medium_serve_cmd,
+        _build_large_serve_cmd,
+    )
+
+    # T4 models — must NOT use bfloat16
+    for name, cmd_fn in [
+        ("InferenceSmall (T4)", _build_small_serve_cmd),
+        ("InferenceMedium (T4)", _build_medium_serve_cmd),
+    ]:
+        cmd = cmd_fn()
+        assert "--dtype=half" in cmd, f"{name}: missing --dtype=half"
+        assert "--dtype=bfloat16" not in cmd, f"{name}: bfloat16 not supported on T4 (cc 7.5)"
+
+    # L40S / A100-80GB models — bfloat16 is valid (cc ≥ 8.0)
+    for name, cmd_fn in [
+        ("Inference (L40S)", _build_serve_cmd),
+        ("InferenceLarge (A100-80GB)", _build_large_serve_cmd),
+    ]:
+        cmd = cmd_fn()
+        assert "--dtype=bfloat16" in cmd, f"{name}: should use --dtype=bfloat16"
+        assert "--dtype=half" not in cmd, f"{name}: should not use float16 on cc≥8.0 GPU"
+
+    return "✓ test_model_dtype_config passed (8 assertions)"
+
+
+@app.function(image=test_image, timeout=120)
+def test_tier_model_routing() -> str:
+    """Test that each routing tier maps to the correct served model alias."""
+    sys.path.insert(0, "/root")
+    from orchestrator.llm_client import _TIER_MODEL_ALIAS
+
+    expected = {
+        "trivial": "llm-small",
+        "simple": "llm-medium",
+        "moderate": "llm",
+        "complex": "llm",
+        "expert": "llm-large",
+    }
+    for tier, alias in expected.items():
+        assert _TIER_MODEL_ALIAS.get(tier) == alias, (
+            f"Tier '{tier}' should map to '{alias}', "
+            f"got '{_TIER_MODEL_ALIAS.get(tier)}'"
+        )
+
+    return "✓ test_tier_model_routing passed (5 assertions)"
+
+
 @app.local_entrypoint()
 def main():
     """Run all tests on Modal and print results."""
@@ -167,6 +225,8 @@ def main():
         test_frege_parser_schemas.spawn(),
         test_rerank_schemas.spawn(),
         test_sandbox_result.spawn(),
+        test_model_dtype_config.spawn(),
+        test_tier_model_routing.spawn(),
     ]:
         results.append(future.get())
 

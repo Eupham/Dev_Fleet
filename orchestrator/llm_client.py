@@ -19,6 +19,18 @@ from pydantic import BaseModel
 from llama_index.core.llms import CustomLLM, CompletionResponse, LLMMetadata
 from llama_index.core.llms.callbacks import llm_completion_callback
 
+# Tier → served model alias mapping.
+# Each tier's vLLM instance is started with a specific --served-model-name.
+# chat_completion() uses this to send the correct model name per tier so
+# vLLM doesn't reject the request with "model not found".
+_TIER_MODEL_ALIAS: dict[str, str] = {
+    "trivial": "llm-small",
+    "simple": "llm-medium",
+    "moderate": "llm",
+    "complex": "llm",
+    "expert": "llm-large",
+}
+
 # Module-level cache so each tier's Modal class handle is resolved only once
 # per orchestrator container lifetime, avoiding repeated instantiation overhead.
 _INFERENCE_CACHE: dict[str, Any] = {}
@@ -121,8 +133,14 @@ def chat_completion(
     Generated text, or Pydantic object if schema is provided.
     """
     inference_inst = _get_inference_instance(tier)
+    # Resolve the correct served model alias for this tier.
+    # Each tier's vLLM instance is started with a specific --served-model-name
+    # that differs from the primary "llm" alias.  If the caller passes an
+    # explicit non-default model name, respect it; otherwise use the tier's own
+    # alias so vLLM doesn't reject the request with "model not found".
+    effective_model = model if model != "llm" else _TIER_MODEL_ALIAS.get(tier, "llm")
     return inference_inst.generate.remote(
-        messages, model=model, temperature=temperature,
+        messages, model=effective_model, temperature=temperature,
         max_tokens=max_tokens, schema=schema,
     )
 
