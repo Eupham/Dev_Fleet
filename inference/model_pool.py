@@ -78,7 +78,7 @@ class InferenceSmall:
             "--host", "0.0.0.0", "--port", str(VLLM_PORT),
             "--uvicorn-log-level=warning",
             "--enable-sleep-mode",
-            "--dtype=bfloat16",
+            "--dtype=half",
             "--max-num-seqs", "8",
             "--max-model-len", "8192",
         ]
@@ -195,7 +195,7 @@ class InferenceMedium:
             "--host", "0.0.0.0", "--port", str(_MEDIUM_PORT),
             "--uvicorn-log-level=warning",
             "--enable-sleep-mode",
-            "--dtype=bfloat16",
+            "--dtype=half",
             "--max-num-seqs", "4",
             "--max-model-len", "8192",
         ]
