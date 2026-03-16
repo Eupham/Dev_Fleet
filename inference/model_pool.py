@@ -40,7 +40,7 @@ _small_image = (
     .add_local_python_source("fleet_app", copy=True)
     .uv_pip_install("vllm==0.17.1", "hf_transfer")
     .run_commands(
-        [f"python -c \"from huggingface_hub import snapshot_download; snapshot_download('{_SMALL_MODEL}')\"", f"VLLM_TARGET_DEVICE=cpu python -m vllm.entrypoints.openai.api_server --model {_SMALL_MODEL} --version || true"],
+        [f"python -c \"from huggingface_hub import snapshot_download; snapshot_download('{_SMALL_MODEL}')\"", f"python -m vllm.entrypoints.openai.api_server --model {_SMALL_MODEL} --device cpu --version || true"],
         env={"HF_HUB_ENABLE_HF_TRANSFER": "1"},
     )
     .env({
@@ -167,7 +167,7 @@ _medium_image = (
     .add_local_python_source("fleet_app", copy=True)
     .uv_pip_install("vllm==0.17.1", "hf_transfer")
     .run_commands(
-        [f"python -c \"from huggingface_hub import snapshot_download; snapshot_download('{_MEDIUM_MODEL}')\"", f"VLLM_TARGET_DEVICE=cpu python -m vllm.entrypoints.openai.api_server --model {_MEDIUM_MODEL} --version || true"],
+        [f"python -c \"from huggingface_hub import snapshot_download; snapshot_download('{_MEDIUM_MODEL}')\"", f"python -m vllm.entrypoints.openai.api_server --model {_MEDIUM_MODEL} --device cpu --version || true"],
         env={"HF_HUB_ENABLE_HF_TRANSFER": "1"},
     )
     .env({
@@ -293,7 +293,7 @@ _large_image = (
     .add_local_python_source("fleet_app", copy=True)
     .uv_pip_install("vllm==0.17.1", "hf_transfer")
     .run_commands(
-        [f"python -c \"from huggingface_hub import snapshot_download; snapshot_download('{_LARGE_MODEL}')\"", f"VLLM_TARGET_DEVICE=cpu python -m vllm.entrypoints.openai.api_server --model {_LARGE_MODEL} --version || true"],
+        [f"python -c \"from huggingface_hub import snapshot_download; snapshot_download('{_LARGE_MODEL}')\"", f"python -m vllm.entrypoints.openai.api_server --model {_LARGE_MODEL} --device cpu --version || true"],
         env={"HF_HUB_ENABLE_HF_TRANSFER": "1"},
     )
     .env({
