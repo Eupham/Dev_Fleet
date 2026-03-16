@@ -180,7 +180,7 @@ vllm_image = (
     )
     # Ensure Qwen3.5 support from transformers HEAD (landed in main branch recently)
     .apt_install("git")
-    .uv_pip_install("transformers==4.49.0")
+    .run_commands(["pip install git+https://github.com/huggingface/transformers.git@bc3952f"])
     .run_commands(
         [
             f"python -c \"from huggingface_hub import snapshot_download; snapshot_download('{MODEL_NAME}')\"",
