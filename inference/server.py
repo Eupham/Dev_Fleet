@@ -197,6 +197,8 @@ vllm_image = (
             "HF_HUB_OFFLINE": "1",
             "NCCL_ASYNC_ERROR_HANDLING": "0",
             "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0",
+            "TORCH_NCCL_ENABLE_MONITORING": "0",
+            "TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC": "0",
         }
     )
 )
@@ -346,6 +348,7 @@ class Inference:
         env.setdefault("VLLM_LOGGING_LEVEL", "WARNING")
         env.setdefault("HF_HUB_OFFLINE", "1")
         env.setdefault("TORCH_NCCL_ENABLE_MONITORING", "0")
+        env.setdefault("TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC", "0")
         env.setdefault("NCCL_ASYNC_ERROR_HANDLING", "0")
         env.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "0")
         env.setdefault("PYTHONWARNINGS", "ignore::FutureWarning")
