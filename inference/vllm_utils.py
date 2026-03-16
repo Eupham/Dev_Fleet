@@ -95,6 +95,7 @@ def wait_for_vllm(proc: subprocess.Popen, port: int, timeout_s: int = 600) -> No
             if r.status_code == 200:
                 return
         except Exception:
-            time.sleep(1)
+            pass
+        time.sleep(1)
     proc.terminate()
     raise TimeoutError(f"vLLM did not become ready on port {port} within {timeout_s}s.")
