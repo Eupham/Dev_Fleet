@@ -179,6 +179,7 @@ vllm_image = (
         extra_options="--torch-backend=cu129 --extra-index-url https://wheels.vllm.ai/nightly",
     )
     # Ensure Qwen3.5 support from transformers HEAD (landed in main branch recently)
+    .apt_install("git")
     .run_commands(
         ["pip install git+https://github.com/huggingface/transformers.git"]
     )
