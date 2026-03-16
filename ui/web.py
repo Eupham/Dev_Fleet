@@ -159,7 +159,7 @@ try:
             lines.append(f"    {_nid('proc', u)} --> {_nid('proc', v)}")
 
         mermaid_src = "\n".join(lines)
-        return f"<pre class='mermaid' style='background:transparent'>{mermaid_src}</pre>"
+        return f"```mermaid\n{mermaid_src}\n```"
 
     # ---------------------------------------------------------------------------
     # Message handler

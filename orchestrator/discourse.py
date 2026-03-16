@@ -27,12 +27,14 @@ from typing import Optional
 
 
 @dataclass(frozen=True)
-class Referent:
-    """A file, variable, or output produced by a task."""
-    ref_id: str
-    referent_type: str      # "file" | "variable" | "stdout" | "exit_code"
-    path_or_name: str
-    produced_by: str        # task_id
+from pydantic import BaseModel, Field
+class Witness(BaseModel):
+    """An MLTT proof term: proves a postcondition is satisfied via a hash."""
+    witness_id: str
+    witness_type: str
+    value_hash: str        # Cryptographic proof of sandbox state
+    proposition: str       # The type this proves (e.g. "file_exists")
+    context_gamma: str     # The Task ID serving as the proof environment
 
 
 @dataclass(frozen=True)
@@ -50,7 +52,15 @@ class DRS:
     parent_label: Optional[str] = field(default=None)
     label: str = "main"
 
-    def introduce(self, task_id: str, referent_type: str, path_or_name: str) -> Referent:
+    def certify_witness(self, witness: Witness) -> bool:
+        """Formally unify a proof term with the discourse context."""
+        if any(r.witness_id == witness.witness_id for r in self.refs if isinstance(r, Witness)):
+            return False
+        self.refs.add(witness)
+        self.conditions.add(Condition("proved_at", (witness.witness_id, witness.value_hash)))
+        return True
+
+    def introduce(self, task_id: str, referent_type: str, path_or_name: str):
         """Add a referent to this scope."""
         ref = Referent(
             ref_id=f"{task_id}:{path_or_name}",

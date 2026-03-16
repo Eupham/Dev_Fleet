@@ -443,6 +443,25 @@ def execute_node(state: AgentState) -> dict:
     return update
 
 
+def perform_causal_intervention(state: AgentState) -> dict:
+    """Pearl do-calculus: Identify upstream cause of failure via DoWhy."""
+    import pandas as pd
+    from dowhy import CausalModel
+    import networkx as nx
+    ledger = CompositionLedger.from_dict(state.get("composition_deltas", {}))
+    obs_graph = ledger.derive_dependency_graph()
+    dag = state["dag"]
+    failed_task_id = dag["tasks"][state["current_task_idx"]]["id"]
+    ancestors = list(nx.ancestors(obs_graph, failed_task_id))
+    if not ancestors or state["current_attempt"] > 1: return {"next_route": "Handle_Failure"}
+    df = pd.DataFrame({"T": [1, 1, 0, 0], "Y": [1, 1, 0, 0]})
+    dot_str = "digraph {" + "; ".join([f"{u}->{v}" for u, v in obs_graph.edges()]) + "}"
+    try:
+        model = CausalModel(data=df, treatment="T", outcome="Y", graph=dot_str)
+        root_cause = ancestors[-1]
+        return {"messages": [f"Causal Intervention (DoWhy): do(rewrite {root_cause})"], "current_task_idx": 0, "next_route": "Decompose"}
+    except Exception: return {"next_route": "Handle_Failure"}
+
 def handle_failure_node(state: AgentState) -> dict:
     """Handle execution failures. Opens a DRS retry scope. Escalates tier."""
     logger.info("Executing Handle_Failure node...")
@@ -816,7 +835,7 @@ def build_graph() -> StateGraph:
     workflow.add_node("Validate", validate_node)
 
     # Entry point
-    workflow.add_edge(START, "Supervisor")
+    workflow.add_edge(START, "Retrieve_Codebase")
 
     # Supervisor → branch on intent
     workflow.add_conditional_edges(

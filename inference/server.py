@@ -199,7 +199,7 @@ vllm_image = (
             "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0",
             "TORCH_NCCL_ENABLE_MONITORING": "0",
             "TORCH_NCCL_DUMP_ON_TIMEOUT": "0",
-            "TORCH_NCCL_TRACE_BUFFER_SIZE": "0",
+            "TORCH_FR_BUFFER_SIZE": "0",
             "PYTHONWARNINGS": "ignore::FutureWarning",
         }
     )
