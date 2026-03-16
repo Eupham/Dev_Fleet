@@ -33,27 +33,37 @@ def _extract_urls_from_prompt(prompt: str) -> list[str]:
     if explicit:
         return explicit[:10]
 
-    # No explicit URLs — ask LLM for 3 relevant authoritative URLs
+    # No explicit URLs — generate a search query and fetch real URLs
     try:
         from orchestrator.llm_client import chat_completion
+        import requests
+        from bs4 import BeautifulSoup
+
         result = chat_completion(
             [
-                {
-                    "role": "system",
-                    "content": (
-                        "Return exactly 3 URLs of authoritative documentation or "
-                        "specification pages relevant to this topic. "
-                        "One URL per line. Only URLs, nothing else."
-                    ),
-                },
-                {"role": "user", "content": prompt[:500]},
+                {"role": "system", "content": "Extract a precise 3-5 word search query from this prompt. Output ONLY the query text."},
+                {"role": "user", "content": prompt[:500]}
             ],
             temperature=0.0,
-            max_tokens=200,
+            max_tokens=50,
         )
-        lines = str(result).strip().splitlines()
-        return [l.strip() for l in lines if l.strip().startswith("http")][:3]
-    except Exception:
+        query = str(result).strip().replace('\"', "")
+
+        # Lightweight scrape of DuckDuckGo HTML
+        html = requests.post(
+            "https://html.duckduckgo.com/html/",
+            data={"q": query},
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        ).text
+        soup = BeautifulSoup(html, "html.parser")
+        urls = []
+        for a in soup.find_all("a", class_="result__url"):
+            url = a.get("href")
+            if url and url.startswith("http"):
+                urls.append(url)
+        return urls[:3]
+    except Exception as e:
+        logger.warning(f"Live search failed: {e}")
         return []
 
 

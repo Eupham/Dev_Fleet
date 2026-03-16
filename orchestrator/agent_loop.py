@@ -27,7 +27,12 @@ warnings.filterwarnings(
 )
 
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
+try:
+    from langgraph.checkpoint.sqlite import SqliteSaver
+    HAS_SQLITE_SAVER = True
+except ImportError:
+    from langgraph.checkpoint.memory import MemorySaver
+    HAS_SQLITE_SAVER = False
 
 from orchestrator.task_parser import (
     AtomicTaskNode, TaskDAG, parse_prompt,
@@ -866,11 +871,15 @@ def build_graph() -> StateGraph:
         },
     )
 
-    # NOTE: MemorySaver is in-process only. If the Modal orchestrator container
-    # is evicted mid-run (e.g. on timeout or OOM), all LangGraph checkpoint state
-    # is lost and the run cannot resume. For production resilience, replace with
-    # SqliteSaver backed by a Modal Volume.
-    checkpointer = MemorySaver()
+    # Replaced MemorySaver with SqliteSaver backed by Modal Volume for production resilience
+    if HAS_SQLITE_SAVER:
+        import sqlite3
+        state_dir = os.getenv("DEVFLEET_STATE_DIR", "/state")
+        os.makedirs(state_dir, exist_ok=True)
+        conn = sqlite3.connect(os.path.join(state_dir, "langgraph_checkpoints.db"), check_same_thread=False)
+        checkpointer = SqliteSaver(conn)
+    else:
+        checkpointer = MemorySaver()
     return workflow.compile(checkpointer=checkpointer)
 
 

@@ -14,9 +14,6 @@ import logging
 
 logger = logging.getLogger("dev_fleet.codebase_rag")
 
-SCORE_THRESHOLD = 0.70
-
-
 def retrieve_codebase_node(state: dict) -> dict:
     """Query the Tri-Graph PropertyGraph and return a scored Mini-Map.
 
@@ -48,9 +45,17 @@ def retrieve_codebase_node(state: dict) -> dict:
 
     mini_map_lines: list[str] = []
     kept = 0
+
+    if not retrieved_nodes:
+        return {"codebase_context": ""}
+
+    # Relative thresholding: Keep nodes within 85% of the top match's score
+    top_score = retrieved_nodes[0].score if retrieved_nodes[0].score is not None else 0.0
+    relative_threshold = top_score * 0.85
+
     for node in retrieved_nodes:
         score = node.score if node.score is not None else 0.0
-        if score < SCORE_THRESHOLD:
+        if score < relative_threshold:
             continue
 
         file_path = node.metadata.get("file_path") or node.metadata.get("node_id", "unknown")
@@ -59,8 +64,8 @@ def retrieve_codebase_node(state: dict) -> dict:
         kept += 1
 
     logger.info(
-        "Cartographer: %d/%d nodes passed score threshold %.2f.",
-        kept, len(retrieved_nodes), SCORE_THRESHOLD,
+        "Cartographer: %d/%d nodes passed relative threshold %.2f (top_score=%.2f).",
+        kept, len(retrieved_nodes), relative_threshold, top_score,
     )
 
     return {"codebase_context": "\n".join(mini_map_lines)}
