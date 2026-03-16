@@ -19,6 +19,7 @@ Snapshot lifecycle (per Modal GPU snapshot docs):
 """
 
 import atexit
+import os
 import socket
 import subprocess
 import time
@@ -177,6 +178,10 @@ vllm_image = (
         "hf_transfer",
         extra_options="--torch-backend=cu129 --extra-index-url https://wheels.vllm.ai/nightly",
     )
+    # Ensure Qwen3.5 support from transformers HEAD (landed in main branch recently)
+    .run_commands(
+        ["uv pip install git+https://github.com/huggingface/transformers.git"]
+    )
     .run_commands(
         [
             f"huggingface-cli download {MODEL_NAME}",
@@ -215,12 +220,16 @@ vllm_cache_vol = modal.Volume.from_name("vllm-cache-vol", create_if_missing=True
 # Snapshot helpers
 # ---------------------------------------------------------------------------
 
-def _wait_ready(proc: subprocess.Popen, timeout_s: int = 120) -> None:
+def _wait_ready(proc: subprocess.Popen) -> None:
     """
     Poll until vLLM accepts connections or the process exits.
     A crashed process is NOT retried. Connection refused while the process
     is alive is treated as normal startup delay.
+
+    Timeout is configurable via VLLM_READY_TIMEOUT environment variable (seconds).
+    Default is 600s to allow for model loading + AOT compilation on large models.
     """
+    timeout_s = int(os.environ.get("VLLM_READY_TIMEOUT", "600"))
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if proc.poll() is not None:
@@ -333,7 +342,20 @@ class Inference:
         cmd = _build_serve_cmd()
         # Log only after the full command is constructed (Fix 4).
         print("[dev_fleet] Starting vLLM for snapshot:", " ".join(cmd))
-        self.proc = subprocess.Popen(cmd)
+
+        # Build environment for vLLM subprocess
+        env = _os.environ.copy()
+        env.setdefault("VLLM_READY_TIMEOUT", "600")       # 10min for model loading + AOT
+        env.setdefault("VLLM_TORCH_COMPILE_LEVEL", "0")   # Skip AOT, JIT on first request
+        # Keep existing vLLM env vars from image
+        env.setdefault("VLLM_SERVER_DEV_MODE", "1")
+        env.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
+        env.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+        env.setdefault("NCCL_WARN_DISABLE", "1")
+        env.setdefault("VLLM_LOGGING_LEVEL", "WARNING")
+        env.setdefault("HF_HUB_OFFLINE", "1")
+
+        self.proc = subprocess.Popen(cmd, env=env)
         # Register the plain helper (not the @modal.exit method) to avoid
         # KeyError when Modal's _partial_function.__get__ is called during
         # atexit before the cls machinery is fully initialised.
@@ -360,6 +382,8 @@ class Inference:
         """Wake up the sleeping vLLM server after container thaws from snapshot."""
         import os as _os
         _os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        # Ensure timeout is available for _wait_ready
+        _os.environ.setdefault("VLLM_READY_TIMEOUT", "600")
 
         # The snapshot contains a sleeping vLLM subprocess. Wake it up —
         # weights reload from CPU to GPU, CUDA graphs resume. No JIT needed.
