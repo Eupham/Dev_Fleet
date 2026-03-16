@@ -10,8 +10,8 @@ Three signals, each independent and always well-defined:
   2. compression_ratio  — 1 - (compressed_len / raw_len) via zlib level 9.
      Information-dense descriptions compress poorly → higher difficulty.
      Always available. Proxy for description complexity, not task complexity.
-     See Cilibrasi & Vitanyi (2005) for the NCD foundation — zlib is the
-     practical approximation, not the theoretical quantity.
+     Approximates per-string Kolmogorov complexity via Lempel-Ziv (zlib).
+     Not NCD (Cilibrasi & Vitanyi 2005), which is a two-string distance.
 
   3. cyclomatic_complexity — max cyclomatic complexity of target source code
      via radon. Only meaningful for modification tasks where target_code is
@@ -29,11 +29,19 @@ def compression_ratio(text: str) -> float:
     """zlib compression ratio as a description complexity proxy.
 
     Returns the fraction of information that cannot be compressed away.
-    Short, repetitive text → low ratio. Dense, varied text → high ratio.
+    Short, repetitive text compresses well → low ratio.
+    Dense, varied text compresses poorly → high ratio.
     Range: [0.0, 1.0].
+
+    This approximates per-string Kolmogorov complexity via Lempel-Ziv (zlib).
+    It is NOT NCD (Normalized Compression Distance, Cilibrasi & Vitanyi 2005),
+    which is a two-string distance measure and does not apply here.
+
+    Unreliable for strings shorter than ~50 bytes: zlib header overhead
+    dominates the compressed length at that scale, making the ratio meaningless.
     """
     encoded = text.encode("utf-8")
-    if len(encoded) < 10:
+    if len(encoded) < 50:
         return 0.0
     compressed_len = len(zlib.compress(encoded, level=9))
     return 1.0 - (compressed_len / len(encoded))

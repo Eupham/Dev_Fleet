@@ -39,6 +39,10 @@ from orchestrator.rerank_engine import rerank_candidates, ScoredEdge
 from orchestrator.tool_sandbox import SandboxResult, ModalSandboxTool
 from orchestrator.supervisor import supervisor_node, conversation_node, direct_execute_node
 from orchestrator.codebase_rag import retrieve_codebase_node
+from orchestrator.discourse import DRS
+from orchestrator.composition import CompositionLedger, WorkspaceState
+from orchestrator.difficulty import difficulty_to_tier, compute_base_difficulty, propagate_difficulty
+from orchestrator.phase_priors import execution_phase, prior_difficulty, seed_graph_from_task, prior_tier
 
 logger = logging.getLogger("dev_fleet.agent_loop")
 
@@ -106,18 +110,23 @@ def rerank_and_retrieve_node(state: AgentState) -> dict:
     """Score tasks against knowledge graphs. Phase-aware difficulty. DRS augmentation."""
     logger.info("Executing Rerank_and_Retrieve node...")
     try:
-        from orchestrator.discourse import DRS
-        from orchestrator.phase_priors import (
-            execution_phase, prior_difficulty,
-        )
         from orchestrator.difficulty import compression_ratio
         from orchestrator.composition import merge_declared_edges
 
         memory = TriGraphMemory.load()
         dag = state["dag"]
 
+        # Load the active DRS scope, with parent access if in a retry
         drs_dict = state.get("discourse_state") or {}
-        drs = DRS.from_dict(drs_dict) if drs_dict else DRS()
+        retry_drs_dict = state.get("retry_discourse_state") or {}
+
+        if retry_drs_dict:
+            # In a retry: active scope is the retry child; outer scope is the parent
+            drs = DRS.from_dict(retry_drs_dict)
+            parent_drs = DRS.from_dict(drs_dict) if drs_dict else None
+        else:
+            drs = DRS.from_dict(drs_dict) if drs_dict else DRS()
+            parent_drs = None
 
         pg_has_nodes = (
             memory.semantic.number_of_nodes() > 0
@@ -130,12 +139,11 @@ def rerank_and_retrieve_node(state: AgentState) -> dict:
         if dag and pg_has_nodes:
             for task in dag.get("tasks", []):
                 raw_desc = task.get("description", "")
-                augmented_desc = drs.augment_description(raw_desc)
+
+                augmented_desc = drs.augment_description(raw_desc, parent_drs=parent_drs)
 
                 try:
-                    retriever = memory._ensure_property_graph().as_retriever(
-                        similarity_top_k=15
-                    )
+                    retriever = memory.as_vector_retriever(similarity_top_k=15)
                     retrieved_nodes = retriever.retrieve(augmented_desc)
                 except Exception as retrieval_exc:
                     logger.warning(
@@ -181,7 +189,6 @@ def rerank_and_retrieve_node(state: AgentState) -> dict:
         task_difficulties = {}
         if dag:
             import networkx as nx
-            from orchestrator.difficulty import compute_base_difficulty, propagate_difficulty
 
             task_list = dag.get("tasks", [])
             G = nx.DiGraph()
@@ -279,7 +286,6 @@ def execute_node(state: AgentState) -> dict:
     task_id = task.get("id", "")
     difficulties = state.get("task_difficulties", {})
     diff_score = difficulties.get(task_id, 0.5)
-    from orchestrator.difficulty import difficulty_to_tier
     tier = difficulty_to_tier(diff_score)
     logger.info("Task %s difficulty=%.2f tier=%s", task_id, diff_score, tier)
 
@@ -324,7 +330,6 @@ def execute_node(state: AgentState) -> dict:
         tool = ModalSandboxTool()
 
         # --- Execution-grounded composition: capture before/after state ---
-        from orchestrator.composition import WorkspaceState, CompositionLedger
         composition_deltas = dict(state.get("composition_deltas", {}))
 
         try:
@@ -376,7 +381,6 @@ def execute_node(state: AgentState) -> dict:
             # DRS: introduce files created by this task into the discourse scope
             if delta is not None:
                 try:
-                    from orchestrator.discourse import DRS
                     drs_dict = state.get("discourse_state") or {}
                     drs = DRS.from_dict(drs_dict) if drs_dict else DRS(label="main")
                     drs.introduce_from_delta(task_id, delta)
@@ -387,7 +391,6 @@ def execute_node(state: AgentState) -> dict:
             # DRS: commit retry scope if this was a retry attempt
             if state.get("current_attempt", 1) > 1:
                 try:
-                    from orchestrator.discourse import DRS
                     outer_drs_dict = state.get("discourse_state") or {}
                     retry_drs_dict = state.get("retry_discourse_state") or {}
                     if retry_drs_dict and outer_drs_dict:
@@ -400,7 +403,6 @@ def execute_node(state: AgentState) -> dict:
 
             # Phase 0: seed the procedural graph from this task's typed fields
             try:
-                from orchestrator.phase_priors import execution_phase, seed_graph_from_task
                 ph = execution_phase(state.get("tasks_completed_count", 0))
                 if ph == 0:
                     seed_graph_from_task(task, memory)
@@ -462,7 +464,6 @@ def handle_failure_node(state: AgentState) -> dict:
     if new_attempt > MAX_RETRIES:
         # Retry budget exhausted — discard retry scope, mark failed
         try:
-            from orchestrator.discourse import DRS
             outer_drs_dict = state.get("discourse_state") or {}
             if outer_drs_dict:
                 outer_drs = DRS.from_dict(outer_drs_dict)
@@ -485,7 +486,6 @@ def handle_failure_node(state: AgentState) -> dict:
     else:
         # Open a DRS retry scope for the next attempt
         try:
-            from orchestrator.discourse import DRS
             outer_drs_dict = state.get("discourse_state") or {}
             outer_drs = (
                 DRS.from_dict(outer_drs_dict) if outer_drs_dict
@@ -499,8 +499,6 @@ def handle_failure_node(state: AgentState) -> dict:
         # Tier escalation: one step up from current tier, or expert if
         # difficulty > 0.85. No causal model — the data does not support
         # one at this point (see assessment doc for full reasoning).
-        from orchestrator.difficulty import difficulty_to_tier
-        from orchestrator.phase_priors import prior_tier
         current_tier = difficulty_to_tier(diff_score)
         new_tier = prior_tier(diff_score, current_tier)
         logger.info(
@@ -571,7 +569,6 @@ def collect_outputs_node(state: AgentState) -> dict:
 
     # Derive observed composition graph from ledger and store in episodic memory
     try:
-        from orchestrator.composition import CompositionLedger
         composition_deltas = state.get("composition_deltas", {})
         if composition_deltas:
             ledger = CompositionLedger.from_dict(composition_deltas)
@@ -701,15 +698,18 @@ def validate_node(state: AgentState) -> dict:
         }
 
     # Create corrective tasks and re-enter execution
+    from pydantic import TypeAdapter
+    _task_adapter = TypeAdapter(AtomicTaskNode)
+
     corrective_nodes = [
-        AtomicTaskNode(
+        TransformTask(
             description=desc,
             tool_hint="python" if any(kw in desc.lower() for kw in ("python", "script", "implement", "write")) else "bash",
         )
         for desc in result.corrective_tasks
     ]
 
-    existing_tasks = [AtomicTaskNode(**t) for t in dag.get("tasks", [])] if dag else []
+    existing_tasks = [_task_adapter.validate_python(t) for t in dag.get("tasks", [])] if dag else []
     all_tasks = existing_tasks + corrective_nodes
 
     new_dag = TaskDAG(
@@ -854,6 +854,10 @@ def build_graph() -> StateGraph:
         },
     )
 
+    # NOTE: MemorySaver is in-process only. If the Modal orchestrator container
+    # is evicted mid-run (e.g. on timeout or OOM), all LangGraph checkpoint state
+    # is lost and the run cannot resume. For production resilience, replace with
+    # SqliteSaver backed by a Modal Volume.
     checkpointer = MemorySaver()
     return workflow.compile(checkpointer=checkpointer)
 

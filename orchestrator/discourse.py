@@ -1,16 +1,25 @@
 # orchestrator/discourse.py
-"""File referent scoping for retry execution.
+"""DRS-based execution scope tracking.
 
-A DRS (Discourse Representation Structure) tracks which files exist in
-each execution scope. Retry scopes are child DRS boxes: they can read
-parent referents but their own referents do not merge upward unless
-the retry succeeds.
+Maps Kamp's Discourse Representation Theory onto sandboxed task execution:
+
+  DRT concept          → Execution concept
+  ─────────────────────────────────────────
+  Discourse referent   → File or variable produced by a task
+  DRS universe (refs)  → Set of files in scope at this point
+  DRS conditions       → Predicates: created_by(ref, task), path(ref, name)
+  Subordinate DRS box  → Retry scope (child of the outer execution scope)
+  Accessibility        → A retry can read outer scope's files; its own
+                         introductions are isolated until commit or discard
+  Anaphora resolution  → augment_description() resolves vague references
+                         (e.g. "the output file") to concrete accessible paths
 
 Serialization contract:
-  to_dict() serializes refs, conditions, label, and parent_label.
-  from_dict() reconstructs everything except the live parent reference.
-  commit_retry_scope() verifies by parent_label string match, not
-  object identity, so it survives the AgentState JSON round-trip.
+  to_dict() / from_dict() survive the AgentState JSON round-trip.
+  The live parent DRS object is not kept post-deserialization; callers
+  must pass it explicitly to accessible_refs_with_parent() and
+  augment_description(). commit_retry_scope() verifies by parent_label
+  string match rather than object identity for the same reason.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
