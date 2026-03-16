@@ -9,7 +9,7 @@ from inference.vllm_utils import get_tier_config, build_vllm_image, wait_for_vll
 # Trivial tier
 # ---------------------------------------------------------------------------
 _cfg_trivial = get_tier_config("trivial")
-_trivial_image = build_vllm_image(_cfg_trivial["model"], is_nightly=False)
+_trivial_image = build_vllm_image(_cfg_trivial["model"], is_nightly=True)
 
 with _trivial_image.imports():
     import requests as _requests_small
@@ -58,7 +58,7 @@ class InferenceSmall:
 # Simple tier
 # ---------------------------------------------------------------------------
 _cfg_simple = get_tier_config("simple")
-_simple_image = build_vllm_image(_cfg_simple["model"], is_nightly=False)
+_simple_image = build_vllm_image(_cfg_simple["model"], is_nightly=True)
 
 with _simple_image.imports():
     import requests as _requests_medium
@@ -107,7 +107,7 @@ class InferenceMedium:
 # Expert tier
 # ---------------------------------------------------------------------------
 _cfg_expert = get_tier_config("expert")
-_expert_image = build_vllm_image(_cfg_expert["model"], is_nightly=False)
+_expert_image = build_vllm_image(_cfg_expert["model"], is_nightly=True)
 
 with _expert_image.imports():
     import requests as _requests_large

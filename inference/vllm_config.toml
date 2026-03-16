@@ -1,6 +1,6 @@
 [models]
-trivial = "Qwen/Qwen3-4B"
-simple = "Qwen/Qwen3-8B"
+trivial = "Qwen/Qwen3.5-4B"
+simple = "Qwen/Qwen3.5-9B"
 moderate = "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4"
 expert = "Qwen/Qwen3.5-27B"
 
