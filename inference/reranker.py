@@ -33,7 +33,8 @@ RERANK_INSTRUCTION = (
 
 reranker_image = (
     modal.Image.debian_slim(python_version="3.12")
-    .pip_install(
+    .apt_install("libblas-dev", "liblapack-dev")
+    .uv_pip_install(
         "torch>=2.0",
         "transformers>=4.51.0",
         "huggingface-hub>=0.20",

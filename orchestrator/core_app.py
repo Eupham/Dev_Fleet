@@ -39,7 +39,9 @@ orchestrator_image = (
     .add_local_python_source("fleet_app", copy=True)
     .add_local_python_source("inference", copy=True)
     .add_local_python_source("orchestrator", copy=True)
-    .pip_install(
+    .apt_install("libblas-dev", "liblapack-dev")
+    .uv_pip_install(
+        "scipy<1.16.0",
         "networkx>=3.2",
         "pydantic>=2.5",
         "llama-index-core>=0.10.0",
