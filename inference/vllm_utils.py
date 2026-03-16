@@ -64,8 +64,8 @@ def build_vllm_image(model_id: str, is_nightly: bool = False) -> modal.Image:
     return (
         img.run_commands(
             [
-                f'python -c "from huggingface_hub import snapshot_download; snapshot_download('{model_id}')"',
-                f'HF_HUB_ENABLE_HF_TRANSFER=1 python -c "from huggingface_hub import snapshot_download; snapshot_download('{model_id}', allow_patterns=['*.json', '*.bin', '*.safetensors', '*.model'])"',
+                f"python -c \"from huggingface_hub import snapshot_download; snapshot_download('{model_id}')\"",
+                f"HF_HUB_ENABLE_HF_TRANSFER=1 python -c \"from huggingface_hub import snapshot_download; snapshot_download('{model_id}', allow_patterns=['*.json', '*.bin', '*.safetensors', '*.model'])\"",
             ],
             env={"HF_HUB_ENABLE_HF_TRANSFER": "1", "HF_XET_HIGH_PERFORMANCE": "1"},
         )
