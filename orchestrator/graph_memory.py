@@ -206,6 +206,8 @@ class TriGraphMemory:
         from orchestrator.llm_client import ModalVLLM
         LISettings.embed_model = ModalEmbeddings()
         LISettings.llm = ModalVLLM()
+        # Force batched processing to drastically reduce Modal RPC network latency
+        LISettings.embed_batch_size = 128
 
     @classmethod
     def load(cls) -> "TriGraphMemory":

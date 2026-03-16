@@ -47,6 +47,13 @@ _small_image = (
         "VLLM_SERVER_DEV_MODE": "1",
         "HF_HUB_OFFLINE": "1",
         "VLLM_LOGGING_LEVEL": "WARNING",
+        "VLLM_ATTENTION_BACKEND": "XFORMERS",
+        "TORCH_NCCL_ENABLE_MONITORING": "0",
+        "TORCH_NCCL_DUMP_ON_TIMEOUT": "0",
+        "TORCH_NCCL_TRACE_BUFFER_SIZE": "0",
+        "NCCL_ASYNC_ERROR_HANDLING": "0",
+        "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0",
+        "PYTHONWARNINGS": "ignore::FutureWarning",
     })
 )
 
@@ -69,7 +76,6 @@ def _build_small_serve_cmd() -> list[str]:
         "--dtype=half",      # T4 compute capability 7.5 — bfloat16 not supported
         "--max-num-seqs", "8",
         "--max-model-len", "8192",
-        "--disable-frontend-multiprocessing",
     ]
 
 
@@ -137,13 +143,19 @@ class InferenceSmall:
                 "type": "json_schema",
                 "json_schema": {"name": schema.__name__, "schema": schema.model_json_schema()},
             }
+            payload["tool_choice"] = "none"
         resp = _requests_small.post(
             f"http://localhost:{VLLM_PORT}/v1/chat/completions", json=payload
         )
         resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
+        content = resp.json()["choices"][0]["message"].get("content")
         if schema:
-            return schema.model_validate_json(content)
+            content = content or "{}"
+            try:
+                return schema.model_validate_json(content)
+            except Exception as e:
+                print(f"[dev_fleet] Schema validation failed: {e}. Raw content: {content}")
+                return schema.model_construct()
         return content
 
     @modal.exit()
@@ -174,6 +186,12 @@ _medium_image = (
         "VLLM_SERVER_DEV_MODE": "1",
         "HF_HUB_OFFLINE": "1",
         "VLLM_LOGGING_LEVEL": "WARNING",
+        "TORCH_NCCL_ENABLE_MONITORING": "0",
+        "TORCH_NCCL_DUMP_ON_TIMEOUT": "0",
+        "TORCH_NCCL_TRACE_BUFFER_SIZE": "0",
+        "NCCL_ASYNC_ERROR_HANDLING": "0",
+        "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0",
+        "PYTHONWARNINGS": "ignore::FutureWarning",
     })
 )
 
@@ -197,7 +215,6 @@ def _build_medium_serve_cmd() -> list[str]:
         "--dtype=bfloat16",  # Upgraded to A10G — bfloat16 is supported
         "--max-num-seqs", "4",
         "--max-model-len", "8192",
-        "--disable-frontend-multiprocessing",
     ]
 
 
@@ -262,13 +279,19 @@ class InferenceMedium:
                 "type": "json_schema",
                 "json_schema": {"name": schema.__name__, "schema": schema.model_json_schema()},
             }
+            payload["tool_choice"] = "none"
         resp = _requests_medium.post(
             f"http://localhost:{_MEDIUM_PORT}/v1/chat/completions", json=payload
         )
         resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
+        content = resp.json()["choices"][0]["message"].get("content")
         if schema:
-            return schema.model_validate_json(content)
+            content = content or "{}"
+            try:
+                return schema.model_validate_json(content)
+            except Exception as e:
+                print(f"[dev_fleet] Schema validation failed: {e}. Raw content: {content}")
+                return schema.model_construct()
         return content
 
     @modal.exit()
@@ -300,6 +323,12 @@ _large_image = (
         "VLLM_SERVER_DEV_MODE": "1",
         "HF_HUB_OFFLINE": "1",
         "VLLM_LOGGING_LEVEL": "WARNING",
+        "TORCH_NCCL_ENABLE_MONITORING": "0",
+        "TORCH_NCCL_DUMP_ON_TIMEOUT": "0",
+        "TORCH_NCCL_TRACE_BUFFER_SIZE": "0",
+        "NCCL_ASYNC_ERROR_HANDLING": "0",
+        "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0",
+        "PYTHONWARNINGS": "ignore::FutureWarning",
     })
 )
 
@@ -322,7 +351,6 @@ def _build_large_serve_cmd() -> list[str]:
         "--dtype=bfloat16",  # A100 compute capability 8.0 — bfloat16 supported
         "--max-num-seqs", "2",
         "--max-model-len", "8192",
-        "--disable-frontend-multiprocessing",
     ]
 
 
@@ -387,13 +415,19 @@ class InferenceLarge:
                 "type": "json_schema",
                 "json_schema": {"name": schema.__name__, "schema": schema.model_json_schema()},
             }
+            payload["tool_choice"] = "none"
         resp = _requests_large.post(
             f"http://localhost:{_LARGE_PORT}/v1/chat/completions", json=payload
         )
         resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
+        content = resp.json()["choices"][0]["message"].get("content")
         if schema:
-            return schema.model_validate_json(content)
+            content = content or "{}"
+            try:
+                return schema.model_validate_json(content)
+            except Exception as e:
+                print(f"[dev_fleet] Schema validation failed: {e}. Raw content: {content}")
+                return schema.model_construct()
         return content
 
     @modal.exit()

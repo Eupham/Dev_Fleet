@@ -200,6 +200,7 @@ vllm_image = (
             "TORCH_NCCL_ENABLE_MONITORING": "0",
             "TORCH_NCCL_DUMP_ON_TIMEOUT": "0",
             "TORCH_NCCL_TRACE_BUFFER_SIZE": "0",
+            "PYTHONWARNINGS": "ignore::FutureWarning",
         }
     )
 )
@@ -291,11 +292,11 @@ def _build_serve_cmd() -> list[str]:
         "--enable-sleep-mode",
         "--dtype=bfloat16",    
         "--max-num-seqs",
-        "4",
+        "32",
         "--max-model-len",
-        "131072",              
+        "32768",              
         "--max-num-batched-tokens",
-        "131072",
+        "32768",
     ]
 # ---------------------------------------------------------------------------
 # vLLM Server class with GPU memory snapshots (scales to zero)
@@ -438,7 +439,11 @@ class Inference:
         if schema:
             # Fallback to empty JSON if content is somehow still None
             content = content or "{}"
-            return schema.model_validate_json(content)
+            try:
+                return schema.model_validate_json(content)
+            except Exception as e:
+                print(f"[dev_fleet] Schema validation failed: {e}. Raw content: {content}")
+                return schema.model_construct()  # Return unvalidated object to avoid Modal traceback
         return content
 
     @modal.web_server(port=VLLM_PORT, startup_timeout=10 * MINUTES)
