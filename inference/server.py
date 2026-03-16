@@ -184,7 +184,7 @@ vllm_image = (
     .run_commands(
         [
             f"python -c \"from huggingface_hub import snapshot_download; snapshot_download('{MODEL_NAME}')\"",
-            f"python -m vllm.entrypoints.openai.api_server --model {MODEL_NAME} --version || true",
+            f"VLLM_TARGET_DEVICE=cpu python -m vllm.entrypoints.openai.api_server --model {MODEL_NAME} --version || true",
         ],
         env={"HF_HUB_ENABLE_HF_TRANSFER": "1", "HF_XET_HIGH_PERFORMANCE": "1"},
     )
