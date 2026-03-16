@@ -19,17 +19,33 @@ from pydantic import BaseModel
 from llama_index.core.llms import CustomLLM, CompletionResponse, LLMMetadata
 from llama_index.core.llms.callbacks import llm_completion_callback
 
+# Module-level cache so each tier's Modal class handle is resolved only once
+# per orchestrator container lifetime, avoiding repeated instantiation overhead.
+_INFERENCE_CACHE: dict[str, Any] = {}
+
 
 def _get_inference_instance(tier: str = "moderate"):
     """Return the appropriate inference instance for the given tier.
 
+    Instances are cached per tier at module level so the Modal class
+    handle is only resolved once per orchestrator container lifetime.
     Falls back to the primary Inference class on any error.
     """
-    import modal
-    import warnings
+    # Normalise so "complex" and None share the same cache key as "moderate"
+    resolved = tier if tier in ("trivial", "simple", "expert") else "moderate"
+    if resolved in _INFERENCE_CACHE:
+        return _INFERENCE_CACHE[resolved]
 
-    # Moderate and complex both use the primary L40S Inference class
-    if tier in ("moderate", "complex", None, ""):
+    instance = _create_inference_instance(resolved)
+    _INFERENCE_CACHE[resolved] = instance
+    return instance
+
+
+def _create_inference_instance(tier: str):
+    """Create a fresh inference instance for the given normalised tier."""
+    import modal
+
+    if tier == "moderate":
         try:
             from inference.server import Inference
             return Inference()
@@ -104,28 +120,11 @@ def chat_completion(
     -------
     Generated text, or Pydantic object if schema is provided.
     """
-    import asyncio
-    import warnings
-
     inference_inst = _get_inference_instance(tier)
-
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            return inference_inst.generate.remote(
-                messages, model=model, temperature=temperature,
-                max_tokens=max_tokens, schema=schema
-            )
-    else:
-        return inference_inst.generate.remote(
-            messages, model=model, temperature=temperature,
-            max_tokens=max_tokens, schema=schema
-        )
+    return inference_inst.generate.remote(
+        messages, model=model, temperature=temperature,
+        max_tokens=max_tokens, schema=schema,
+    )
 
 
 def generate(
