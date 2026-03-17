@@ -24,7 +24,9 @@ def download_weights(repo_id: str, filename: str):
     hf_hub_download(
         repo_id=repo_id, 
         filename=filename, 
-        local_dir="/root/models" 
+        local_dir="/root/models",
+        local_dir_use_symlinks=False, # Put this back to strictly enforce physical files
+        force_download=True           # CRITICAL: Ignores broken cache and forces a fresh download
     )
 
 def build_llama_image(repo_id: str, filename: str) -> modal.Image:
