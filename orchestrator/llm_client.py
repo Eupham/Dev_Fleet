@@ -1,49 +1,48 @@
 import modal
 from typing import List, Dict, Any
 
-def query_llm(messages: List[Dict[str, str]], tier: str = "moderate", schema: Any = None) -> str:
-    """
-    Connects to the deployed Modal Inference class and generates a response.
-    Strictly enforces the requested tier. No silent fallbacks.
-    """
-    # Updated to perfectly match the 5 outputs of difficulty_to_tier()
+def query_llm(messages: List[Dict[str, str]], tier: str = "moderate", schema: Any = None) -> Any:
+    """Connects to the deployed Modal Inference class and generates a response."""
+    
+    # Map all 5 tiers from difficulty.py to the 4 Modal classes
     class_map = {
-        "trivial": "InferenceSmall",   # T4 GPU
-        "simple": "InferenceMedium",   # L4 GPU
-        "moderate": "Inference",       # L40S GPU
-        "complex": "Inference",        # L40S GPU (Bridging the gap)
-        "expert": "InferenceLarge"     # L40S GPU
+        "trivial": "InferenceSmall",
+        "simple": "InferenceMedium",
+        "moderate": "Inference",
+        "complex": "Inference",       # Safely mapped to your L40S
+        "expert": "InferenceLarge"
     }
     
-    # 1. Fail loud if an unknown tier is passed
-    if tier not in class_map:
+    class_name = class_map.get(tier)
+    if not class_name:
         raise ValueError(
             f"[ROUTING ERROR] Invalid tier '{tier}' requested. "
             f"Must be one of: {list(class_map.keys())}"
         )
         
-    class_name = class_map[tier]
-    
-    # 2. Fail loud if Modal cannot connect to the specific class
     try:
+        # Look up the deployed class on the dev_fleet app
         ModelClass = modal.Cls.from_name("dev_fleet", class_name)
-        model_instance = ModelClass()
+        
+        # Instantiate and call the remote method securely
+        kwargs = {"messages": messages}
+        if schema:
+            kwargs["schema"] = schema
+            
+        return ModelClass().generate.remote(**kwargs)
+        
     except modal.exception.NotFoundError:
         raise RuntimeError(
             f"[MODAL ERROR] Could not find class '{class_name}' in app 'dev_fleet'. "
-            f"Make sure your app is currently deployed and the class name matches."
+            f"Ensure `modal deploy app.py` has finished successfully."
         )
     except Exception as e:
-        raise RuntimeError(
-            f"[INITIALIZATION ERROR] Failed to connect to tier '{tier}' ({class_name}). "
-            f"Details: {e}"
-        )
+        raise RuntimeError(f"[INFERENCE ERROR] Failed on tier '{tier}' ({class_name}): {e}")
 
-    # 3. Fail loud if the generation itself crashes
-    try:
-        return model_instance.generate.remote(messages=messages, schema=schema)
-    except Exception as e:
-        raise RuntimeError(
-            f"[INFERENCE ERROR] Generation failed on tier '{tier}' ({class_name}). "
-            f"Details: {e}"
-        )
+
+def chat_completion(messages: List[Dict[str, str]], model: str = "llm", temperature: float = 0.0, max_tokens: int = 2048, schema: Any = None) -> Any:
+    """
+    Compatibility alias for orchestrator/task_parser.py 
+    Routes parsing tasks to the moderate tier by default.
+    """
+    return query_llm(messages, tier="moderate", schema=schema)
