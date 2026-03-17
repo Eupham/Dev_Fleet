@@ -4,37 +4,43 @@ from inference.utils import get_tier_config, build_llama_image
 
 _cfg = get_tier_config("moderate")
 _image = build_llama_image(_cfg["model"], _cfg["filename"])
-cache_vol = modal.Volume.from_name("model-cache-vol", create_if_missing=True)
 
 @app.cls(
     image=_image,
     gpu=_cfg.get("gpu", "L40S"),
     scaledown_window=2,
     timeout=1800,
-    volumes={"/vol/cache": cache_vol},
+    # REMOVED: volumes={"/vol/cache": cache_vol}
 )
 class Inference:
     @modal.enter()
     def start(self):
-        print(f"[dev_fleet] Ensuring {_cfg['model']} is present in Volume...")
-        from huggingface_hub import hf_hub_download
+        print(f"[dev_fleet] Loading {_cfg['model']} from local SSD...")
         from llama_cpp import Llama
         
-        # Explicitly download to get the exact path, avoiding symlink issues in Modal Volumes
-        model_path = hf_hub_download(
-            repo_id=_cfg["model"],
-            filename=_cfg["filename"],
-            local_dir="/vol/cache/models",
-            local_dir_use_symlinks=False
-        )
-        
-        print(f"[dev_fleet] Loading model from {model_path} into VRAM...")
+        # Load directly from the fast local disk where it was baked during build
         self.llm = Llama(
-            model_path=model_path,
+            model_path=f"/root/models/{_cfg['filename']}",
             n_gpu_layers=-1, 
             n_ctx=_cfg["n_ctx"],
             verbose=False
         )
+        print("[dev_fleet] Model loaded into VRAM.")
+
+    @modal.method()
+    def generate(self, messages, model=None, temperature=0.3, max_tokens=4096, schema=None):
+        kwargs = {"messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+        if schema:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"schema": schema.model_json_schema()}
+            }
+        resp = self.llm.create_chat_completion(**kwargs)
+        content = resp["choices"][0]["message"]["content"]
+        if schema:
+            try: return schema.model_validate_json(content or "{}")
+            except Exception: return schema.model_construct()
+        return content        )
         print("[dev_fleet] Model loaded. Snapshot ready.")
 
     @modal.method()
