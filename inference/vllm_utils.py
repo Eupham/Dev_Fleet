@@ -30,7 +30,7 @@ def build_serve_cmd(cfg: dict) -> list[str]:
         "--served-model-name", cfg["served_model_name"],
         "--host", "0.0.0.0",
         "--port", str(cfg["port"]),
-        "--uvicorn-log-level=warning",
+        "--uvicorn-log-level=info",
         "--enable-sleep-mode",
     ]
     if "tensor_parallel_size" in cfg: cmd.extend(["--tensor-parallel-size", str(cfg["tensor_parallel_size"])])
@@ -72,7 +72,7 @@ def build_vllm_image(model_id: str, is_nightly: bool = False) -> modal.Image:
         .env({
             "VLLM_SERVER_DEV_MODE": "1",
             "TORCHINDUCTOR_COMPILE_THREADS": "1",
-            "VLLM_LOGGING_LEVEL": "WARNING",
+            "VLLM_LOGGING_LEVEL": "INFO",
             "HF_HUB_OFFLINE": "1",
             "NCCL_ASYNC_ERROR_HANDLING": "0",
             "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0",
