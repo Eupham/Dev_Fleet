@@ -20,10 +20,12 @@ class Inference:
         from huggingface_hub import hf_hub_download
         from llama_cpp import Llama
         
-        # Explicitly download to get the exact path, avoiding 'from_pretrained' issues
+        # Explicitly download to get the exact path, avoiding symlink issues in Modal Volumes
         model_path = hf_hub_download(
             repo_id=_cfg["model"],
             filename=_cfg["filename"],
+            local_dir="/vol/cache/models",
+            local_dir_use_symlinks=False
         )
         
         print(f"[dev_fleet] Loading model from {model_path} into VRAM...")
@@ -34,6 +36,7 @@ class Inference:
             verbose=False
         )
         print("[dev_fleet] Model loaded. Snapshot ready.")
+
     @modal.method()
     def generate(self, messages, model=None, temperature=0.3, max_tokens=4096, schema=None):
         kwargs = {"messages": messages, "temperature": temperature, "max_tokens": max_tokens}
