@@ -12,7 +12,7 @@ _img_small = build_llama_image(_cfg_small["model"], _cfg_small["filename"])
 
 @app.cls(
     image=_img_small, gpu=_cfg_small.get("gpu", "T4"), scaledown_window=2, timeout=600,
-    volumes={"/root/.cache/huggingface": cache_vol}, enable_memory_snapshot=True,
+    volumes={"/vol/cache": cache_vol}, enable_memory_snapshot=True,
 )
 class InferenceSmall:
     @modal.enter(snap=True)
@@ -39,7 +39,7 @@ _img_medium = build_llama_image(_cfg_medium["model"], _cfg_medium["filename"])
 
 @app.cls(
     image=_img_medium, gpu=_cfg_medium.get("gpu", "L4"), scaledown_window=2, timeout=600,
-    volumes={"/root/.cache/huggingface": cache_vol}, enable_memory_snapshot=True,
+    volumes={"/vol/cache": cache_vol}, enable_memory_snapshot=True,
 )
 class InferenceMedium:
     @modal.enter(snap=True)
@@ -66,7 +66,7 @@ _img_large = build_llama_image(_cfg_large["model"], _cfg_large["filename"])
 
 @app.cls(
     image=_img_large, gpu=_cfg_large.get("gpu", "L40S"), scaledown_window=2, timeout=1800,
-    volumes={"/root/.cache/huggingface": cache_vol}, enable_memory_snapshot=True,
+    volumes={"/vol/cache": cache_vol}, enable_memory_snapshot=True,
 )
 class InferenceLarge:
     @modal.enter(snap=True)

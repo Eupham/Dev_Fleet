@@ -23,6 +23,7 @@ def build_llama_image(repo_id: str, filename: str) -> modal.Image:
     return (
         modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.12")
         .apt_install("build-essential", "clang")
+        .env({"HF_HOME": "/vol/cache", "HF_HUB_ENABLE_HF_TRANSFER": "1"})
         .pip_install("huggingface_hub", "hf_transfer", "langgraph>=1.1.2", "mcp>=1.26.0")
         .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
         .pip_install("llama-cpp-python", extra_options="--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124")

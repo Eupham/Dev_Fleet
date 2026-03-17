@@ -11,7 +11,7 @@ cache_vol = modal.Volume.from_name("model-cache-vol", create_if_missing=True)
     gpu=_cfg.get("gpu", "L40S"),
     scaledown_window=2,
     timeout=1800,
-    volumes={"/root/.cache/huggingface": cache_vol},
+    volumes={"/vol/cache": cache_vol},
     enable_memory_snapshot=True,
 )
 class Inference:
