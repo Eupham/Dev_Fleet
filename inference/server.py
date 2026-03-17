@@ -209,7 +209,7 @@ def _build_serve_cmd() -> list[str]:
     image=vllm_image,
     gpu="L40S",
     scaledown_window=2,  # Modal minimum (>0 required); snapshots handle cold-start
-    timeout=10 * MINUTES,
+    timeout=30 * MINUTES,
     retries=0,
     volumes={
         "/root/.cache/vllm": vllm_cache_vol,
@@ -348,7 +348,7 @@ class Inference:
                 return schema.model_construct()  # Return unvalidated object to avoid Modal traceback
         return content
 
-    @modal.web_server(port=VLLM_PORT, startup_timeout=10 * MINUTES)
+    @modal.web_server(port=VLLM_PORT, startup_timeout=30 * MINUTES)
     def serve(self):
         """Expose the vLLM OpenAI-compatible API to the internet."""
 

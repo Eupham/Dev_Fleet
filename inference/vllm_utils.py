@@ -83,7 +83,7 @@ def build_vllm_image(model_id: str, is_nightly: bool = False) -> modal.Image:
         })
     )
 
-def wait_for_vllm(proc: subprocess.Popen, port: int, timeout_s: int = 600) -> None:
+def wait_for_vllm(proc: subprocess.Popen, port: int, timeout_s: int = 1800) -> None:
     import requests
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
