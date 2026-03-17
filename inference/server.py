@@ -6,12 +6,11 @@ _cfg = get_tier_config("moderate")
 _image = build_llama_image(_cfg["model"], _cfg["filename"])
 
 # inference/server.py
-
 @app.cls(
     image=_image,
     gpu=_cfg.get("gpu", "L40S"),
-    scaledown_window=2,
-    timeout=1800,
+    scaledown_window=_cfg.get("scaledown_window", 2),
+    timeout=_cfg.get("timeout", 1800),
 )
 class Inference:
     @modal.enter()
@@ -19,16 +18,13 @@ class Inference:
         print(f"[dev_fleet] Loading {_cfg['model']} from local SSD...")
         from llama_cpp import Llama
         
-        # The weights are at /root/models/{repo_id}/{filename}
-        model_path = f"/root/models/{_cfg['model']}/{_cfg['filename']}"
-        
+        # Load directly from the fast local disk where it was baked during build
         self.llm = Llama(
-            model_path=model_path,
+            model_path=f"/root/models/{_cfg['filename']}",
             n_gpu_layers=-1, 
             n_ctx=_cfg["n_ctx"],
             verbose=False
         )
-        print("[dev_fleet] Model loaded into VRAM.")
 
     @modal.method()
     def generate(self, messages, model=None, temperature=0.3, max_tokens=4096, schema=None):
