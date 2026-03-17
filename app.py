@@ -65,3 +65,31 @@ async def warmup_fleet():
             print(f"⚠️ {res} snapshot failed or timed out: {results[i]}")
         else:
             print(f"✅ {res} snapshot successfully captured!")
+
+
+@app.local_entrypoint()
+async def warmup_fleet():
+    """Trigger GPU snapshots for all inference tiers in parallel after deployment."""
+    import asyncio
+    from inference.server import Inference
+    from inference.model_pool import InferenceSmall, InferenceMedium, InferenceLarge
+
+    print("🚀 Triggering parallel GPU snapshots for the entire fleet...")
+    print("⏳ This will take up to 30 minutes. You can monitor progress in the Modal dashboard.")
+    
+    dummy_msg = [{"role": "user", "content": "Hello!"}]
+    
+    # Fire all generation requests concurrently so Modal boots all 4 GPUs at once
+    results = await asyncio.gather(
+        Inference().generate.remote.aio(messages=dummy_msg, max_tokens=1),
+        InferenceSmall().generate.remote.aio(messages=dummy_msg, max_tokens=1),
+        InferenceMedium().generate.remote.aio(messages=dummy_msg, max_tokens=1),
+        InferenceLarge().generate.remote.aio(messages=dummy_msg, max_tokens=1),
+        return_exceptions=True  # Prevent one timeout from cancelling the others
+    )
+
+    for i, res in enumerate(["Moderate (L40S)", "Trivial (T4)", "Simple (A10G)", "Expert (A100)"]):
+        if isinstance(results[i], Exception):
+            print(f"⚠️ {res} snapshot failed or timed out: {results[i]}")
+        else:
+            print(f"✅ {res} snapshot successfully captured!")
