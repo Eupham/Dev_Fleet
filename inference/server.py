@@ -39,26 +39,4 @@ class Inference:
         if schema:
             try: return schema.model_validate_json(content or "{}")
             except Exception: return schema.model_construct()
-        return content            }
-        resp = self.llm.create_chat_completion(**kwargs)
-        content = resp["choices"][0]["message"]["content"]
-        if schema:
-            try: return schema.model_validate_json(content or "{}")
-            except Exception: return schema.model_construct()
-        return content        )
-        print("[dev_fleet] Model loaded. Snapshot ready.")
-
-    @modal.method()
-    def generate(self, messages, model=None, temperature=0.3, max_tokens=4096, schema=None):
-        kwargs = {"messages": messages, "temperature": temperature, "max_tokens": max_tokens}
-        if schema:
-            kwargs["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {"schema": schema.model_json_schema()}
-            }
-        resp = self.llm.create_chat_completion(**kwargs)
-        content = resp["choices"][0]["message"]["content"]
-        if schema:
-            try: return schema.model_validate_json(content or "{}")
-            except Exception: return schema.model_construct()
         return content
