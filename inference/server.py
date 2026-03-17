@@ -16,18 +16,25 @@ cache_vol = modal.Volume.from_name("model-cache-vol", create_if_missing=True)
 )
 class Inference:
     @modal.enter(snap=True)
-    def start(self):
-        print(f"[dev_fleet] Loading {_cfg['model']} into VRAM...")
-        from llama_cpp import Llama
-        self.llm = Llama.from_pretrained(
-            repo_id=_cfg["model"],
-            filename=_cfg["filename"],
-            n_gpu_layers=-1, 
-            n_ctx=_cfg["n_ctx"],
-            verbose=False
-        )
-        print("[dev_fleet] Model loaded. Snapshot ready.")
-
+        def start(self):
+            print(f"[dev_fleet] Ensuring {_cfg['model']} is present in Volume...")
+            from huggingface_hub import hf_hub_download
+            from llama_cpp import Llama
+            
+            # Explicitly download to get the exact path, avoiding 'from_pretrained' issues
+            model_path = hf_hub_download(
+                repo_id=_cfg["model"],
+                filename=_cfg["filename"],
+            )
+            
+            print(f"[dev_fleet] Loading model from {model_path} into VRAM...")
+            self.llm = Llama(
+                model_path=model_path,
+                n_gpu_layers=-1, 
+                n_ctx=_cfg["n_ctx"],
+                verbose=False
+            )
+            print("[dev_fleet] Model loaded. Snapshot ready.")
     @modal.method()
     def generate(self, messages, model=None, temperature=0.3, max_tokens=4096, schema=None):
         kwargs = {"messages": messages, "temperature": temperature, "max_tokens": max_tokens}
