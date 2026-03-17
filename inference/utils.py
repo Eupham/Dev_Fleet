@@ -66,7 +66,8 @@ class BaseInference:
             model_path=model_path,
             n_gpu_layers=-1, 
             n_ctx=cfg["n_ctx"],
-            verbose=False
+            verbose=False,
+            use_mmap=False,  # <--- THE REDDIT FIX: Disable memory mapping
         )
 
     def generate_logic(self, messages, temperature=0.3, max_tokens=4096, schema=None):
