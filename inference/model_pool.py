@@ -20,9 +20,12 @@ class InferenceSmall:
         from huggingface_hub import hf_hub_download
         from llama_cpp import Llama
         
+        # Download directly as a regular file, bypassing the symlink cache
         model_path = hf_hub_download(
             repo_id=_cfg_small["model"], 
-            filename=_cfg_small["filename"]
+            filename=_cfg_small["filename"],
+            local_dir="/vol/cache/models",
+            local_dir_use_symlinks=False
         )
         
         self.llm = Llama(
@@ -59,9 +62,12 @@ class InferenceMedium:
         from huggingface_hub import hf_hub_download
         from llama_cpp import Llama
         
+        # Download directly as a regular file, bypassing the symlink cache
         model_path = hf_hub_download(
             repo_id=_cfg_medium["model"], 
-            filename=_cfg_medium["filename"]
+            filename=_cfg_medium["filename"],
+            local_dir="/vol/cache/models",
+            local_dir_use_symlinks=False
         )
         
         self.llm = Llama(
@@ -98,9 +104,12 @@ class InferenceLarge:
         from huggingface_hub import hf_hub_download
         from llama_cpp import Llama
         
+        # Download directly as a regular file, bypassing the symlink cache
         model_path = hf_hub_download(
             repo_id=_cfg_large["model"], 
-            filename=_cfg_large["filename"]
+            filename=_cfg_large["filename"],
+            local_dir="/vol/cache/models",
+            local_dir_use_symlinks=False
         )
         
         self.llm = Llama(
