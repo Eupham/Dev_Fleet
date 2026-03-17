@@ -9,21 +9,29 @@ served_model_name = "llm-small"
 filename = "Qwen3.5-4B-Q4_K_M.gguf"
 n_ctx = 8192
 gpu = "T4"
+scaledown_window = 2
+timeout = 600
 
 [simple]
 served_model_name = "llm-medium"
 filename = "Qwen3.5-9B-Q4_K_M.gguf"
 n_ctx = 16384
 gpu = "L4"
+scaledown_window = 2
+timeout = 600
 
 [moderate]
 served_model_name = "llm"
 filename = "Qwen3.5-35B-A3B-Q4_K_M.gguf"
 n_ctx = 32768
 gpu = "L40S"
+scaledown_window = 2
+timeout = 1800
 
 [expert]
 served_model_name = "llm-large"
 filename = "Qwen3.5-35B-A3B-Q4_K_M.gguf"
 n_ctx = 32768
 gpu = "L40S"
+scaledown_window = 2
+timeout = 1800
