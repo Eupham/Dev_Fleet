@@ -13,20 +13,24 @@ def get_tier_config(tier: str) -> dict:
 def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
     """
     Compiles engine image and downloads weights directly via curl.
+    Uses Ninja build system to parallelize and accelerate compilation.
     """
     # Direct download URL for Hugging Face
     download_url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
     
     return (
         modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.12")
-        .apt_install("build-essential", "clang", "cmake", "git", "curl")
+        # Added ninja-build here:
+        .apt_install("build-essential", "clang", "cmake", "git", "curl", "ninja-build")
         .run_commands("ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1")
         .env({
             "HF_HOME": "/vol/cache",
-            "CMAKE_ARGS": "-DGGML_CUDA=on",
+            # Added -G Ninja here to force the faster build system:
+            "CMAKE_ARGS": "-DGGML_CUDA=on -G Ninja",
             "LD_LIBRARY_PATH": "/usr/local/cuda/lib64/stubs" 
         }) 
         .pip_install("huggingface_hub", "langgraph>=1.1.2", "mcp>=1.26.0")
+        # Still pulling the bleeding-edge master branch for Qwen 3.5 support:
         .pip_install("git+https://github.com/abetlen/llama-cpp-python.git", extra_options="--upgrade --no-cache-dir --force-reinstall")
         .add_local_python_source("fleet_app", copy=True)
         .add_local_file("inference/config.toml", remote_path="/root/inference/config.toml", copy=True)
