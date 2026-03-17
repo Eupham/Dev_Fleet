@@ -5,6 +5,8 @@ from inference.utils import get_tier_config, build_llama_image
 _cfg = get_tier_config("moderate")
 _image = build_llama_image(_cfg["model"], _cfg["filename"])
 
+# inference/server.py
+
 @app.cls(
     image=_image,
     gpu=_cfg.get("gpu", "L40S"),
@@ -17,9 +19,11 @@ class Inference:
         print(f"[dev_fleet] Loading {_cfg['model']} from local SSD...")
         from llama_cpp import Llama
         
-        # Load directly from the fast local disk where it was baked during build
+        # The weights are at /root/models/{repo_id}/{filename}
+        model_path = f"/root/models/{_cfg['model']}/{_cfg['filename']}"
+        
         self.llm = Llama(
-            model_path=f"/root/models/{_cfg['filename']}",
+            model_path=model_path,
             n_gpu_layers=-1, 
             n_ctx=_cfg["n_ctx"],
             verbose=False
