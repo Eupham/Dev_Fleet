@@ -1,8 +1,8 @@
 import modal
 from fleet_app import app
-from inference.vllm_utils import get_tier_config, build_llama_image
+from inference.utils import get_tier_config, build_llama_image
 
-cache_vol = modal.Volume.from_name("vllm-cache-vol", create_if_missing=True)
+cache_vol = modal.Volume.from_name("model-cache-vol", create_if_missing=True)
 
 # ---------------------------------------------------------------------------
 # Trivial tier

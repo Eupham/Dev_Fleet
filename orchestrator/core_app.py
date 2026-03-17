@@ -47,15 +47,15 @@ orchestrator_image = (
         "llama-index-core>=0.10.0",
         "llama-index>=0.10.0",
         "llama-index-embeddings-huggingface>=0.1.0",
-        "langgraph>=0.2.0",
-        "mcp>=0.1.0",
+        "langgraph>=1.1.2",
+        "mcp>=1.26.0",
         "radon>=6.0",                   # cyclomatic complexity signal
-        "tree-sitter>=0.23",            # non-Python code extraction
+        "tree-sitter>=0.25.2",            # non-Python code extraction
         "tree-sitter-javascript>=0.23", # JS/TS grammar
         "markdown-it-py>=3.0",          # structured prose extraction
         "beautifulsoup4>=4.12",         # HTML stripping for web content
-        "trafilatura>=1.12",            # HTML/web extraction
-        "pymupdf>=1.24",                # PDF extraction
+        "trafilatura>=2.0.0",            # HTML/web extraction
+        "pymupdf>=1.27.2",                # PDF extraction
     )
 )
 

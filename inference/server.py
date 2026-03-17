@@ -1,10 +1,10 @@
 import modal
 from fleet_app import app
-from inference.vllm_utils import get_tier_config, build_llama_image
+from inference.utils import get_tier_config, build_llama_image
 
 _cfg = get_tier_config("moderate")
 _image = build_llama_image(_cfg["model"], _cfg["filename"])
-cache_vol = modal.Volume.from_name("vllm-cache-vol", create_if_missing=True)
+cache_vol = modal.Volume.from_name("model-cache-vol", create_if_missing=True)
 
 @app.cls(
     image=_image,
