@@ -12,7 +12,6 @@ cache_vol = modal.Volume.from_name("model-cache-vol", create_if_missing=True)
     scaledown_window=2,
     timeout=1800,
     volumes={"/vol/cache": cache_vol},
-    enable_memory_snapshot=True,
 )
 class Inference:
     @modal.enter(snap=True)
