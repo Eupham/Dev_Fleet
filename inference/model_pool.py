@@ -16,10 +16,21 @@ _img_small = build_llama_image(_cfg_small["model"], _cfg_small["filename"])
 )
 class InferenceSmall:
     @modal.enter(snap=True)
-    def start(self):
-        from llama_cpp import Llama
-        self.llm = Llama.from_pretrained(repo_id=_cfg_small["model"], filename=_cfg_small["filename"], n_gpu_layers=-1, n_ctx=_cfg_small["n_ctx"], verbose=False)
-
+        def start(self):
+            from huggingface_hub import hf_hub_download
+            from llama_cpp import Llama
+            
+            model_path = hf_hub_download(
+                repo_id=_cfg_small["model"], 
+                filename=_cfg_small["filename"]
+            )
+            
+            self.llm = Llama(
+                model_path=model_path, 
+                n_gpu_layers=-1, 
+                n_ctx=_cfg_small["n_ctx"], 
+                verbose=False
+            )
     @modal.method()
     def generate(self, messages, model=None, temperature=0.3, max_tokens=4096, schema=None):
         kwargs = {"messages": messages, "temperature": temperature, "max_tokens": max_tokens}
