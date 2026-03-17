@@ -4,34 +4,83 @@ from inference.vllm_utils import get_tier_config, build_llama_image
 
 cache_vol = modal.Volume.from_name("vllm-cache-vol", create_if_missing=True)
 
-def _create_llama_cls(tier_name: str, class_name: str):
-    _cfg = get_tier_config(tier_name)
-    _img = build_llama_image(_cfg["model"], _cfg["filename"])
-    
-    @app.cls(
-        image=_img, gpu=_cfg.get("gpu", "T4"), scaledown_window=2, timeout=600,
-        volumes={"/root/.cache/huggingface": cache_vol}, enable_memory_snapshot=True,
-    )
-    class InferenceNode:
-        @modal.enter(snap=True)
-        def start(self):
-            from llama_cpp import Llama
-            self.llm = Llama.from_pretrained(repo_id=_cfg["model"], filename=_cfg["filename"], n_gpu_layers=-1, n_ctx=_cfg["n_ctx"], verbose=False)
+# ---------------------------------------------------------------------------
+# Trivial tier
+# ---------------------------------------------------------------------------
+_cfg_small = get_tier_config("trivial")
+_img_small = build_llama_image(_cfg_small["model"], _cfg_small["filename"])
 
-        @modal.method()
-        def generate(self, messages, model=None, temperature=0.3, max_tokens=4096, schema=None):
-            kwargs = {"messages": messages, "temperature": temperature, "max_tokens": max_tokens}
-            if schema: kwargs["response_format"] = {"type": "json_schema", "json_schema": {"schema": schema.model_json_schema()}}
-            resp = self.llm.create_chat_completion(**kwargs)
-            content = resp["choices"][0]["message"]["content"]
-            if schema:
-                try: return schema.model_validate_json(content or "{}")
-                except Exception: return schema.model_construct()
-            return content
-            
-    InferenceNode.__name__ = class_name
-    return InferenceNode
+@app.cls(
+    image=_img_small, gpu=_cfg_small.get("gpu", "T4"), scaledown_window=2, timeout=600,
+    volumes={"/root/.cache/huggingface": cache_vol}, enable_memory_snapshot=True,
+)
+class InferenceSmall:
+    @modal.enter(snap=True)
+    def start(self):
+        from llama_cpp import Llama
+        self.llm = Llama.from_pretrained(repo_id=_cfg_small["model"], filename=_cfg_small["filename"], n_gpu_layers=-1, n_ctx=_cfg_small["n_ctx"], verbose=False)
 
-InferenceSmall = _create_llama_cls("trivial", "InferenceSmall")
-InferenceMedium = _create_llama_cls("simple", "InferenceMedium")
-InferenceLarge = _create_llama_cls("expert", "InferenceLarge")
+    @modal.method()
+    def generate(self, messages, model=None, temperature=0.3, max_tokens=4096, schema=None):
+        kwargs = {"messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+        if schema: kwargs["response_format"] = {"type": "json_schema", "json_schema": {"schema": schema.model_json_schema()}}
+        resp = self.llm.create_chat_completion(**kwargs)
+        content = resp["choices"][0]["message"]["content"]
+        if schema:
+            try: return schema.model_validate_json(content or "{}")
+            except Exception: return schema.model_construct()
+        return content
+
+# ---------------------------------------------------------------------------
+# Simple tier
+# ---------------------------------------------------------------------------
+_cfg_medium = get_tier_config("simple")
+_img_medium = build_llama_image(_cfg_medium["model"], _cfg_medium["filename"])
+
+@app.cls(
+    image=_img_medium, gpu=_cfg_medium.get("gpu", "L4"), scaledown_window=2, timeout=600,
+    volumes={"/root/.cache/huggingface": cache_vol}, enable_memory_snapshot=True,
+)
+class InferenceMedium:
+    @modal.enter(snap=True)
+    def start(self):
+        from llama_cpp import Llama
+        self.llm = Llama.from_pretrained(repo_id=_cfg_medium["model"], filename=_cfg_medium["filename"], n_gpu_layers=-1, n_ctx=_cfg_medium["n_ctx"], verbose=False)
+
+    @modal.method()
+    def generate(self, messages, model=None, temperature=0.3, max_tokens=4096, schema=None):
+        kwargs = {"messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+        if schema: kwargs["response_format"] = {"type": "json_schema", "json_schema": {"schema": schema.model_json_schema()}}
+        resp = self.llm.create_chat_completion(**kwargs)
+        content = resp["choices"][0]["message"]["content"]
+        if schema:
+            try: return schema.model_validate_json(content or "{}")
+            except Exception: return schema.model_construct()
+        return content
+
+# ---------------------------------------------------------------------------
+# Expert tier
+# ---------------------------------------------------------------------------
+_cfg_large = get_tier_config("expert")
+_img_large = build_llama_image(_cfg_large["model"], _cfg_large["filename"])
+
+@app.cls(
+    image=_img_large, gpu=_cfg_large.get("gpu", "L40S"), scaledown_window=2, timeout=1800,
+    volumes={"/root/.cache/huggingface": cache_vol}, enable_memory_snapshot=True,
+)
+class InferenceLarge:
+    @modal.enter(snap=True)
+    def start(self):
+        from llama_cpp import Llama
+        self.llm = Llama.from_pretrained(repo_id=_cfg_large["model"], filename=_cfg_large["filename"], n_gpu_layers=-1, n_ctx=_cfg_large["n_ctx"], verbose=False)
+
+    @modal.method()
+    def generate(self, messages, model=None, temperature=0.3, max_tokens=4096, schema=None):
+        kwargs = {"messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+        if schema: kwargs["response_format"] = {"type": "json_schema", "json_schema": {"schema": schema.model_json_schema()}}
+        resp = self.llm.create_chat_completion(**kwargs)
+        content = resp["choices"][0]["message"]["content"]
+        if schema:
+            try: return schema.model_validate_json(content or "{}")
+            except Exception: return schema.model_construct()
+        return content
