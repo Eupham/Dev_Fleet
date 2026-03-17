@@ -22,6 +22,7 @@ class InferenceSmall:
     def start(self):
         from llama_cpp import Llama
         
+        # Load directly from the fast local disk baked into the image
         self.llm = Llama(
             model_path=f"/root/models/{_cfg_small['filename']}", 
             n_gpu_layers=-1, 
