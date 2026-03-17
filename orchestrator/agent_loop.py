@@ -1,8 +1,11 @@
 import operator
 from typing import Annotated, List, TypedDict, Union
 from langgraph.graph import StateGraph, END
+
 from orchestrator.llm_client import query_llm
 from orchestrator.tool_sandbox import execute_code
+# Import the actual metrics from your difficulty.py
+from orchestrator.difficulty import compression_ratio, difficulty_to_tier
 
 class AgentState(TypedDict):
     messages: Annotated[List[dict], operator.add]
@@ -11,7 +14,17 @@ class AgentState(TypedDict):
 
 def call_model(state: AgentState):
     print(f"🤖 [Jules] Thinking (Iteration {state['iteration']})...")
-    response = query_llm(state["messages"], tier="moderate")
+    
+    # 1. Dynamically score the prompt to determine the hardware tier
+    user_prompts = [m["content"] for m in state["messages"] if m["role"] == "user"]
+    latest_prompt = user_prompts[-1] if user_prompts else ""
+    
+    score = compression_ratio(latest_prompt)
+    tier_string = difficulty_to_tier(score)
+    print(f"🧭 [Router] Assigned Tier: '{tier_string}' (Difficulty Score: {score:.2f})")
+    
+    # 2. Pass the calculated tier to the Modal client
+    response = query_llm(state["messages"], tier=tier_string)
     
     # If the model produced a code block, move to execution
     if "```python" in response:
