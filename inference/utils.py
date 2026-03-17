@@ -33,14 +33,20 @@ def build_llama_image(repo_id: str, filename: str) -> modal.Image:
     """Compiles the engine image with latest dependencies and model weights."""
     return (
         modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.12")
-        .apt_install("build-essential", "clang")
-        # REMOVED: hf_transfer environment variables
-        .env({"HF_HOME": "/vol/cache"}) 
-        # REMOVED: hf_transfer from pip_install
+        # 1. ADD cmake so we can compile the C++ backend
+        .apt_install("build-essential", "clang", "cmake") 
+        .env({
+            "HF_HOME": "/vol/cache",
+            # 2. ADD the compiler flag to force CUDA support
+            "CMAKE_ARGS": "-DGGML_CUDA=on" 
+        }) 
         .pip_install("huggingface_hub", "langgraph>=1.1.2", "mcp>=1.26.0")
-        .pip_install("llama-cpp-python", extra_options="--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124")
+        # 3. REPLACE the wheel link with a forced source compilation
+        .pip_install(
+            "llama-cpp-python", 
+            extra_options="--upgrade --no-cache-dir --force-reinstall"
+        )
         .add_local_python_source("fleet_app", copy=True)
         .add_local_file("inference/config.toml", remote_path="/root/inference/config.toml", copy=True)
-        # --- NEW: Runs the download function during deployment ---
         .run_function(download_weights, kwargs={"repo_id": repo_id, "filename": filename})
     )
