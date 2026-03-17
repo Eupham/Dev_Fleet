@@ -11,25 +11,19 @@ _cfg_small = get_tier_config("trivial")
 _img_small = build_llama_image(_cfg_small["model"], _cfg_small["filename"])
 
 @app.cls(
-    image=_img_small, gpu=_cfg_small.get("gpu", "T4"), scaledown_window=2, timeout=600,
+    image=_img_small, 
+    gpu=_cfg_small.get("gpu", "T4"), 
+    scaledown_window=_cfg_small.get("scaledown_window", 2), 
+    timeout=_cfg_small.get("timeout", 600),
     volumes={"/vol/cache": cache_vol},
 )
 class InferenceSmall:
     @modal.enter()
     def start(self):
-        from huggingface_hub import hf_hub_download
         from llama_cpp import Llama
         
-        # Download directly as a regular file, bypassing the symlink cache
-        model_path = hf_hub_download(
-            repo_id=_cfg_small["model"], 
-            filename=_cfg_small["filename"],
-            local_dir="/vol/cache/models",
-            local_dir_use_symlinks=False
-        )
-        
         self.llm = Llama(
-            model_path=model_path, 
+            model_path=f"/root/models/{_cfg_small['filename']}", 
             n_gpu_layers=-1, 
             n_ctx=_cfg_small["n_ctx"], 
             verbose=False
@@ -53,25 +47,19 @@ _cfg_medium = get_tier_config("simple")
 _img_medium = build_llama_image(_cfg_medium["model"], _cfg_medium["filename"])
 
 @app.cls(
-    image=_img_medium, gpu=_cfg_medium.get("gpu", "L4"), scaledown_window=2, timeout=600,
+    image=_img_medium, 
+    gpu=_cfg_medium.get("gpu", "L4"), 
+    scaledown_window=_cfg_medium.get("scaledown_window", 2), 
+    timeout=_cfg_medium.get("timeout", 600),
     volumes={"/vol/cache": cache_vol},
 )
 class InferenceMedium:
     @modal.enter()
     def start(self):
-        from huggingface_hub import hf_hub_download
         from llama_cpp import Llama
         
-        # Download directly as a regular file, bypassing the symlink cache
-        model_path = hf_hub_download(
-            repo_id=_cfg_medium["model"], 
-            filename=_cfg_medium["filename"],
-            local_dir="/vol/cache/models",
-            local_dir_use_symlinks=False
-        )
-        
         self.llm = Llama(
-            model_path=model_path, 
+            model_path=f"/root/models/{_cfg_medium['filename']}", 
             n_gpu_layers=-1, 
             n_ctx=_cfg_medium["n_ctx"], 
             verbose=False
@@ -95,25 +83,19 @@ _cfg_large = get_tier_config("expert")
 _img_large = build_llama_image(_cfg_large["model"], _cfg_large["filename"])
 
 @app.cls(
-    image=_img_large, gpu=_cfg_large.get("gpu", "L40S"), scaledown_window=2, timeout=1800,
+    image=_img_large, 
+    gpu=_cfg_large.get("gpu", "L40S"), 
+    scaledown_window=_cfg_large.get("scaledown_window", 2), 
+    timeout=_cfg_large.get("timeout", 1800),
     volumes={"/vol/cache": cache_vol},
 )
 class InferenceLarge:
     @modal.enter()
     def start(self):
-        from huggingface_hub import hf_hub_download
         from llama_cpp import Llama
         
-        # Download directly as a regular file, bypassing the symlink cache
-        model_path = hf_hub_download(
-            repo_id=_cfg_large["model"], 
-            filename=_cfg_large["filename"],
-            local_dir="/vol/cache/models",
-            local_dir_use_symlinks=False
-        )
-        
         self.llm = Llama(
-            model_path=model_path, 
+            model_path=f"/root/models/{_cfg_large['filename']}", 
             n_gpu_layers=-1, 
             n_ctx=_cfg_large["n_ctx"], 
             verbose=False
