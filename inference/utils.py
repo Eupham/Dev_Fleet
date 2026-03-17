@@ -26,20 +26,22 @@ def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
             # We move CMAKE_ARGS directly into the pip install command for clarity
         }) 
         .pip_install("huggingface_hub", "langgraph>=1.1.2", "mcp>=1.26.0")
+
         .run_commands([
+            # 1. Clone the wrapper
             "git clone --depth 1 --recurse-submodules https://github.com/abetlen/llama-cpp-python.git /tmp/llama-cpp-python",
+            
+            # 2. Force the internal engine to the absolute latest master for Qwen 3.5 support
             "cd /tmp/llama-cpp-python/vendor/llama.cpp && git fetch origin master && git checkout origin/master",
-            # FIX: Added -DLLAMA_BUILD_TOOLS=OFF to bypass the broken MTMD tool build.
-            # We also ensure Ninja is used as the generator for faster Modal builds.
+            
+            # 3. FIX: Brute-force removal of the broken MTMD tool directory.
+            # This prevents the "incorrect number of arguments" error entirely.
+            "rm -rf /tmp/llama-cpp-python/vendor/llama.cpp/tools/mtmd",
+            
+            # 4. Compile from the now-cleaned source
             "export LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs && "
             "cd /tmp/llama-cpp-python && "
             "CMAKE_ARGS='-DGGML_CUDA=on -G Ninja -DLLAMA_BUILD_TOOLS=OFF' pip install ."
-        ])
-        .add_local_python_source("fleet_app", copy=True)
-        .add_local_file("inference/config.toml", remote_path="/root/inference/config.toml", copy=True)
-        .run_commands([
-            "mkdir -p /root/models",
-            f"curl -L -o /root/models/{filename} {download_url}"
         ])
     )
 
