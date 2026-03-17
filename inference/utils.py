@@ -6,7 +6,8 @@ def get_tier_config(tier: str) -> dict:
     with open("inference/config.toml", "r") as f:
         config = toml.load(f)
     tier_cfg = config[tier]
-    tier_cfg["model"] = config["models"][tier]
+    # Map 'model' to 'repo_id' to match function signature
+    tier_cfg["repo_id"] = config["models"][tier]
     return tier_cfg
 
 def download_weights(repo_id: str, filename: str):
@@ -22,7 +23,7 @@ def download_weights(repo_id: str, filename: str):
 def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
     """
     Compiles engine image. 
-    The **kwargs catch extra TOML fields (like gpu/timeout) so they don't crash the build.
+    **kwargs safely catches extra TOML fields (like gpu/timeout).
     """
     return (
         modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.12")
@@ -45,7 +46,9 @@ class BaseInference:
     
     def start_logic(self, cfg: dict):
         from llama_cpp import Llama
-        print(f"Loading {cfg['model']} from local SSD...")
+        # Use cfg.get('repo_id') which we mapped in get_tier_config
+        repo = cfg.get("repo_id") or cfg.get("model")
+        print(f"Loading {repo} from local SSD...")
         self.llm = Llama(
             model_path=f"/root/models/{cfg['filename']}",
             n_gpu_layers=-1, 
