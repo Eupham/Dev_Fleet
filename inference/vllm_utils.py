@@ -19,12 +19,13 @@ def get_tier_config(tier: str) -> dict:
     return c
 
 def build_llama_image(repo_id: str, filename: str) -> modal.Image:
-    # Notice we are injecting langgraph and mcp here for the orchestrator
     return (
         modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.12")
+        .apt_install("build-essential", "clang")
         .pip_install("huggingface_hub", "hf_transfer", "langgraph", "mcp")
-        .env({"CMAKE_ARGS": "-DGGML_CUDA=on", "HF_HUB_ENABLE_HF_TRANSFER": "1"})
-        .pip_install("llama-cpp-python")
+        .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+        # Using pre-built CUDA wheels bypasses the massive C++ compilation time
+        .pip_install("llama-cpp-python", extra_options="--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124")
         .add_local_python_source("fleet_app", copy=True)
         .add_local_file("inference/vllm_config.toml", remote_path="/root/inference/vllm_config.toml", copy=True)
         .run_commands([
