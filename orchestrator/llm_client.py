@@ -6,11 +6,13 @@ def query_llm(messages: List[Dict[str, str]], tier: str = "moderate", schema: An
     Connects to the deployed Modal Inference class and generates a response.
     Strictly enforces the requested tier. No silent fallbacks.
     """
+    # Updated to perfectly match the 5 outputs of difficulty_to_tier()
     class_map = {
-        "trivial": "InferenceSmall",
-        "simple": "InferenceMedium",
-        "moderate": "Inference",
-        "expert": "InferenceLarge"
+        "trivial": "InferenceSmall",   # T4 GPU
+        "simple": "InferenceMedium",   # L4 GPU
+        "moderate": "Inference",       # L40S GPU
+        "complex": "Inference",        # L40S GPU (Bridging the gap)
+        "expert": "InferenceLarge"     # L40S GPU
     }
     
     # 1. Fail loud if an unknown tier is passed
