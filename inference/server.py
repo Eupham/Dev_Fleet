@@ -10,7 +10,6 @@ _image = build_llama_image(_cfg["model"], _cfg["filename"])
     gpu=_cfg.get("gpu", "L40S"),
     scaledown_window=2,
     timeout=1800,
-    # REMOVED: volumes={"/vol/cache": cache_vol}
 )
 class Inference:
     @modal.enter()
@@ -35,6 +34,12 @@ class Inference:
                 "type": "json_schema",
                 "json_schema": {"schema": schema.model_json_schema()}
             }
+        resp = self.llm.create_chat_completion(**kwargs)
+        content = resp["choices"][0]["message"]["content"]
+        if schema:
+            try: return schema.model_validate_json(content or "{}")
+            except Exception: return schema.model_construct()
+        return content            }
         resp = self.llm.create_chat_completion(**kwargs)
         content = resp["choices"][0]["message"]["content"]
         if schema:
