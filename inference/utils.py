@@ -27,7 +27,7 @@ def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
             "LD_LIBRARY_PATH": "/usr/local/cuda/lib64/stubs" 
         }) 
         .pip_install("huggingface_hub", "langgraph>=1.1.2", "mcp>=1.26.0")
-        .pip_install("llama-cpp-python", extra_options="--upgrade --no-cache-dir --force-reinstall")
+        .pip_install("git+https://github.com/abetlen/llama-cpp-python.git", extra_options="--upgrade --no-cache-dir --force-reinstall")
         .add_local_python_source("fleet_app", copy=True)
         .add_local_file("inference/config.toml", remote_path="/root/inference/config.toml", copy=True)
         # Bypassing python library quirks to guarantee the raw binary is downloaded:
