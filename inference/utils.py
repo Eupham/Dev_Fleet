@@ -1,51 +1,25 @@
 import modal
 import toml
-
-# inference/utils.py
-def start_logic(self, cfg: dict):
-    from llama_cpp import Llama
-    import os
-    model_path = f"/root/models/{cfg['filename']}"
-    
-    # Add this debug check
-    if not os.path.exists(model_path):
-        print(f"CRITICAL: Model file not found at {model_path}")
-        print(f"Contents of /root/models: {os.listdir('/root/models') if os.path.exists('/root/models') else 'DIR MISSING'}")
-        
-    self.llm = Llama(
-        model_path=model_path,
-        n_gpu_layers=-1, 
-        n_ctx=cfg["n_ctx"],
-        verbose=False
-    )
+import os
 
 def get_tier_config(tier: str) -> dict:
     """Loads the specific model configuration from config.toml."""
     with open("inference/config.toml", "r") as f:
         config = toml.load(f)
     tier_cfg = config[tier]
-    # Map 'model' to 'repo_id' to match function signature
     tier_cfg["repo_id"] = config["models"][tier]
     return tier_cfg
 
-def download_weights(repo_id: str, filename: str):
-    """Downloads weights directly into the Modal image build."""
-    from huggingface_hub import hf_hub_download
-    print(f"Downloading {repo_id}/{filename} into container image...")
-    hf_hub_download(
-        repo_id=repo_id, 
-        filename=filename, 
-        local_dir="/root/models"
-    )
-
 def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
     """
-    Compiles engine image. 
-    **kwargs safely catches extra TOML fields (like gpu/timeout).
+    Compiles engine image and downloads weights directly via curl.
     """
+    # Direct download URL for Hugging Face
+    download_url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
+    
     return (
         modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.12")
-        .apt_install("build-essential", "clang", "cmake", "git")
+        .apt_install("build-essential", "clang", "cmake", "git", "curl")
         .run_commands("ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1")
         .env({
             "HF_HOME": "/vol/cache",
@@ -56,7 +30,11 @@ def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
         .pip_install("llama-cpp-python", extra_options="--upgrade --no-cache-dir --force-reinstall")
         .add_local_python_source("fleet_app", copy=True)
         .add_local_file("inference/config.toml", remote_path="/root/inference/config.toml", copy=True)
-        .run_function(download_weights, kwargs={"repo_id": repo_id, "filename": filename})
+        # Bypassing python library quirks to guarantee the raw binary is downloaded:
+        .run_commands([
+            "mkdir -p /root/models",
+            f"curl -L -o /root/models/{filename} {download_url}"
+        ])
     )
 
 class BaseInference:
@@ -64,11 +42,24 @@ class BaseInference:
     
     def start_logic(self, cfg: dict):
         from llama_cpp import Llama
-        # Use cfg.get('repo_id') which we mapped in get_tier_config
+        
         repo = cfg.get("repo_id") or cfg.get("model")
+        model_path = f"/root/models/{cfg['filename']}"
+        
+        # --- DIAGNOSTIC CHECK ---
+        print(f"Checking model path: {model_path}")
+        if os.path.exists(model_path):
+            size_mb = os.path.getsize(model_path) / (1024 * 1024)
+            print(f"File exists! Size: {size_mb:.2f} MB")
+            if size_mb < 1.0:
+                raise RuntimeError(f"CRITICAL: Downloaded a pointer file instead of the model! File size is only {size_mb} MB.")
+        else:
+            raise RuntimeError(f"CRITICAL: File NOT found at {model_path}. Build step failed to persist the file.")
+        # ------------------------
+
         print(f"Loading {repo} from local SSD...")
         self.llm = Llama(
-            model_path=f"/root/models/{cfg['filename']}",
+            model_path=model_path,
             n_gpu_layers=-1, 
             n_ctx=cfg["n_ctx"],
             verbose=False
