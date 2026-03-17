@@ -14,7 +14,7 @@ cache_vol = modal.Volume.from_name("model-cache-vol", create_if_missing=True)
     volumes={"/vol/cache": cache_vol},
 )
 class Inference:
-    @modal.enter(snap=True)
+    @modal.enter()
     def start(self):
         print(f"[dev_fleet] Ensuring {_cfg['model']} is present in Volume...")
         from huggingface_hub import hf_hub_download
