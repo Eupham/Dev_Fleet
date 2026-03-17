@@ -1,36 +1,47 @@
 import modal
-from typing import List, Dict, Any, Type
-from orchestrator.difficulty import estimate_difficulty # Uses your existing scoring logic
+from typing import List, Dict, Any
 
-def query_llm(messages: List[Dict[str, str]], tier: str = None, schema: Any = None) -> str:
+def query_llm(messages: List[Dict[str, str]], tier: str = "moderate", schema: Any = None) -> str:
     """
-    Dynamically routes the prompt to the correct GPU tier based on difficulty.
+    Connects to the deployed Modal Inference class and generates a response.
+    Strictly enforces the requested tier. No silent fallbacks.
     """
-    # 1. If no tier is forced, automatically calculate the best one
-    if not tier:
-        prompt_text = " ".join([m["content"] for m in messages])
-        score = estimate_difficulty(prompt_text) # Returns 0.0 to 1.0
-        
-        if score < 0.3: tier = "trivial"   # T4 GPU (Cheap)
-        elif score < 0.6: tier = "simple"  # L4 GPU
-        else: tier = "moderate"           # L40S GPU (Powerful)
-
-    # 2. Map the tier string to the correct Modal class
     class_map = {
-        "trivial": ("InferenceSmall", "trivial"),
-        "simple": ("InferenceMedium", "simple"),
-        "moderate": ("Inference", "moderate"),
-        "expert": ("InferenceLarge", "expert")
+        "trivial": "InferenceSmall",
+        "simple": "InferenceMedium",
+        "moderate": "Inference",
+        "expert": "InferenceLarge"
     }
     
-    class_name, config_key = class_map.get(tier, ("Inference", "moderate"))
+    # 1. Fail loud if an unknown tier is passed
+    if tier not in class_map:
+        raise ValueError(
+            f"[ROUTING ERROR] Invalid tier '{tier}' requested. "
+            f"Must be one of: {list(class_map.keys())}"
+        )
+        
+    class_name = class_map[tier]
     
-    # 3. Call the Modal class dynamically
+    # 2. Fail loud if Modal cannot connect to the specific class
     try:
-        ModelClass = modal.Cls.from_name("dev-fleet", class_name)
+        ModelClass = modal.Cls.from_name("dev_fleet", class_name)
         model_instance = ModelClass()
+    except modal.exception.NotFoundError:
+        raise RuntimeError(
+            f"[MODAL ERROR] Could not find class '{class_name}' in app 'dev_fleet'. "
+            f"Make sure your app is currently deployed and the class name matches."
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"[INITIALIZATION ERROR] Failed to connect to tier '{tier}' ({class_name}). "
+            f"Details: {e}"
+        )
+
+    # 3. Fail loud if the generation itself crashes
+    try:
         return model_instance.generate.remote(messages=messages, schema=schema)
     except Exception as e:
-        print(f"Routing failed to {tier}, falling back to Moderate: {e}")
-        Fallback = modal.Cls.from_name("dev-fleet", "Inference")
-        return Fallback().generate.remote(messages=messages, schema=schema)
+        raise RuntimeError(
+            f"[INFERENCE ERROR] Generation failed on tier '{tier}' ({class_name}). "
+            f"Details: {e}"
+        )
