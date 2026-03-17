@@ -52,7 +52,10 @@ reranker_image = (
 # ---------------------------------------------------------------------------
 
 
+cache_vol = modal.Volume.from_name("model-cache-vol", create_if_missing=True)
+
 @app.cls(
+    volumes={"/root/.cache/huggingface": cache_vol},
     image=reranker_image,
     scaledown_window=5 * MINUTES,
     timeout=5 * MINUTES,

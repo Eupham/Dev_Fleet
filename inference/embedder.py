@@ -37,7 +37,10 @@ embedder_image = (
 )
 
 
+cache_vol = modal.Volume.from_name("model-cache-vol", create_if_missing=True)
+
 @app.cls(
+    volumes={"/root/.cache/huggingface": cache_vol},
     image=embedder_image,
     cpu=1.0,
     min_containers=0,
