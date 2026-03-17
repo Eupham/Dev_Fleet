@@ -40,10 +40,7 @@ reranker_image = (
         "huggingface-hub>=0.20",
         "hf_transfer",
     )
-    .run_commands(
-        [f"python -c \"from huggingface_hub import snapshot_download; snapshot_download('{RERANKER_MODEL}')\""],
-        env={"HF_HUB_ENABLE_HF_TRANSFER": "1", "HF_XET_HIGH_PERFORMANCE": "1"},
-    )
+    
     .add_local_python_source("fleet_app", copy=True)
 )
 
