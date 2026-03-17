@@ -18,14 +18,13 @@ def get_tier_config(tier: str) -> dict:
     c["model"] = config["models"][tier]
     return c
 
-# --- THIS IS THE MISSING PART: Downloads the model into the image ---
 def download_weights(repo_id: str, filename: str):
     from huggingface_hub import hf_hub_download
     print(f"Downloading {repo_id}/{filename} into container image...")
     hf_hub_download(
         repo_id=repo_id, 
         filename=filename, 
-        local_dir="/root/models"  # Puts it exactly where server.py is looking!
+        local_dir="/root/models" 
     )
 
 def build_llama_image(repo_id: str, filename: str) -> modal.Image:
