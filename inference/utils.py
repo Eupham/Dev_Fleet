@@ -1,6 +1,24 @@
 import modal
 import toml
 
+# inference/utils.py
+def start_logic(self, cfg: dict):
+    from llama_cpp import Llama
+    import os
+    model_path = f"/root/models/{cfg['filename']}"
+    
+    # Add this debug check
+    if not os.path.exists(model_path):
+        print(f"CRITICAL: Model file not found at {model_path}")
+        print(f"Contents of /root/models: {os.listdir('/root/models') if os.path.exists('/root/models') else 'DIR MISSING'}")
+        
+    self.llm = Llama(
+        model_path=model_path,
+        n_gpu_layers=-1, 
+        n_ctx=cfg["n_ctx"],
+        verbose=False
+    )
+
 def get_tier_config(tier: str) -> dict:
     """Loads the specific model configuration from config.toml."""
     with open("inference/config.toml", "r") as f:
