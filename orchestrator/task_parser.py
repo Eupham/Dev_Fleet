@@ -1,140 +1,85 @@
-"""Typed task decomposition — TaskDAG and AtomicTaskNode schemas.
-
-Implements Montague Grammar (translation) and Fillmore Frame Semantics (instantiation).
-"""
-from __future__ import annotations
+"""Montague Parser & Fillmore Frame Mapper."""
 import uuid
-from typing import Annotated, Literal, Union
+import logging
+from typing import Literal, Annotated, Union
+from pydantic import BaseModel, Field
 
-import networkx as nx
-from pydantic import BaseModel, Field, model_validator
-
-# --- 1. FILLMORE FRAMES (Core Task Schemas) ---
+logger = logging.getLogger("dev_fleet.task_parser")
 
 class _TaskBase(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     description: str
     tool_hint: Literal["bash", "python", ""] = "python"
-    status: Literal["pending", "running", "success", "failed"] = "pending"
-    preconditions: list[str] = Field(default=[])
-    postconditions: list[str] = Field(default=[])
-    actor_capability: Literal["bash", "python", "llm_only"] = "python"
-    implementation_depth: Literal["algorithm", "library", "syscall"] = "library"
-    execution_cost: Literal["trivial", "moderate", "expensive"] = "moderate"
+    preconditions: list[str] = []
 
-class QueryTask(_TaskBase):
-    """Linguistic Patient: The resource to be read."""
+class TransformTask(_TaskBase): 
+    task_type: Literal["transform"] = "transform"
+
+class QueryTask(_TaskBase): 
     task_type: Literal["query"] = "query"
     target_resource: str = ""
 
-class TransformTask(_TaskBase):
-    """Linguistic Theme: The state to be changed."""
-    task_type: Literal["transform"] = "transform"
-
-class VerifyTask(_TaskBase):
-    """Linguistic Assertion: The condition to be checked."""
+class VerifyTask(_TaskBase): 
     task_type: Literal["verify"] = "verify"
     assertion: str = ""
 
-AtomicTaskNode = Annotated[
-    Union[QueryTask, TransformTask, VerifyTask],
-    Field(discriminator="task_type"),
-]
+AtomicTaskNode = Annotated[Union[QueryTask, TransformTask, VerifyTask], Field(discriminator="task_type")]
 
 class TaskDAG(BaseModel):
     user_prompt: str = ""
     intent_observation: str = ""
     tasks: list[AtomicTaskNode]
 
-# --- 2. MONTAGUE TRANSLATION LAYER (LLM Interface) ---
-
-class FlatMontagueParse(BaseModel):
-    """Safe, flat schema for llama.cpp GBNF compiler. Represents a single logical action."""
-    action_verb: Literal["create", "modify", "read", "verify", "research"] = Field(
-        ..., description="The fundamental action type."
-    )
-    theme_target: str = Field(
-        default="", description="The file or resource target. E.g. '/workspace/app.py'"
-    )
-    goal_instruction: str = Field(
-        ..., description="The formal instruction of what needs to be accomplished."
-    )
+class MontagueAction(BaseModel):
+    verb: Literal["create", "modify", "read", "verify", "research"]
+    target: str
+    instruction: str
 
 class MontagueDecomposition(BaseModel):
-    """The root schema passed to the LLM for translation."""
-    intent_observation: str = Field(default="Translating request to formal logic.")
-    parses: list[FlatMontagueParse] = Field(..., description="Sequential list of actions.")
+    intent_observation: str = ""
+    parses: list[MontagueAction]
 
-def map_to_fillmore_frames(parses: list[FlatMontagueParse]) -> list[AtomicTaskNode]:
-    """Deterministically map flat linguistic parses into strict Fillmore frames."""
-    frames = []
-    prev_id = None
-    for p in parses:
-        # Frame Selection Logic based on the Montague Verb
-        if p.action_verb in ("create", "modify", "research"):
-            frame = TransformTask(
-                id=uuid.uuid4().hex[:8],
-                description=f"Target: {p.theme_target}\nGoal: {p.goal_instruction}",
-                tool_hint="python" if p.action_verb != "research" else "bash"
-            )
-        elif p.action_verb == "read":
-            frame = QueryTask(
-                id=uuid.uuid4().hex[:8],
-                description=p.goal_instruction,
-                target_resource=p.theme_target
-            )
-        elif p.action_verb == "verify":
-            frame = VerifyTask(
-                id=uuid.uuid4().hex[:8],
-                description=p.goal_instruction,
-                assertion=p.theme_target
-            )
-        else:
-            frame = TransformTask(id=uuid.uuid4().hex[:8], description=p.goal_instruction)
-
-        # DAG Construction: Deterministic Sequential Topology
-        if prev_id:
-            frame.preconditions = [prev_id]
-        frames.append(frame)
-        prev_id = frame.id
-    return frames
-
-# --- 3. PIPELINE ---
-
-def parse_prompt(
-    user_prompt: str,
-    model: str = "llm",
-    codebase_context: str = "",
-    is_research: bool = False
-) -> TaskDAG:
+def parse_prompt(user_prompt: str) -> TaskDAG:
     from orchestrator.llm_client import chat_completion
-    import logging
-    logger = logging.getLogger("dev_fleet.task_parser")
-
-    messages = [
-        {"role": "system", "content": "You are a Montague Parser. Break the request into flat sequential actions. Return JSON."},
-        {"role": "user", "content": f"Context:\n{codebase_context}\n\nRequest: {user_prompt}"}
-    ]
-
+    
     try:
-        # 1. LLM performs Montague Translation (Flat Schema)
-        raw_response = chat_completion(messages, model=model, schema=MontagueDecomposition)
+        raw_response = chat_completion(
+            [
+                {"role": "system", "content": "You are a Montague Parser. Extract flat logical actions into JSON."},
+                {"role": "user", "content": user_prompt}
+            ], 
+            schema=MontagueDecomposition
+        )
         
+        # FIXED: Robust re-instantiation to ensure 'parses' attribute exists
         if isinstance(raw_response, MontagueDecomposition):
             parsed = raw_response
         elif isinstance(raw_response, dict):
             parsed = MontagueDecomposition.model_validate(raw_response)
         else:
-            raise ValueError("Unexpected response type from LLM")
+            raise ValueError(f"Unexpected response type: {type(raw_response)}")
 
-        # 2. Python instantiates Fillmore Frames and builds the DAG
-        typed_tasks = map_to_fillmore_frames(parsed.parses)
-        return TaskDAG(user_prompt=user_prompt, intent_observation=parsed.intent_observation, tasks=typed_tasks)
-
+        tasks = []
+        prev_id = None
+        for p in parsed.parses:
+            # Map Montague actions to Fillmore Frames
+            task = TransformTask(description=p.instruction)
+            if prev_id: 
+                task.preconditions = [prev_id]
+            tasks.append(task)
+            prev_id = task.id
+            
+        return TaskDAG(
+            user_prompt=user_prompt, 
+            intent_observation=parsed.intent_observation, 
+            tasks=tasks
+        )
+        
     except Exception as exc:
         logger.warning("Montague decomposition failed (%s) — falling back.", exc)
+        fallback_task = TransformTask(description=user_prompt)
         return TaskDAG(
             user_prompt=user_prompt,
-            intent_observation="Fallback: single task.",
-            tasks=[TransformTask(description=user_prompt[:500], tool_hint="python")]
+            intent_observation="Fallback: single task created.",
+            tasks=[fallback_task]
         )
