@@ -4,7 +4,25 @@ import os
 import subprocess
 import time
 import requests
+import json
 from openai import OpenAI
+
+def clean_json_response(content: str) -> str:
+    """Clean markdown formatting and trailing commentary from LLM JSON responses."""
+    content = content or "{}"
+    content = content.strip()
+
+    # Try to extract content inside a markdown code block.
+    # We use a non-greedy match. If there are nested backticks (e.g. valid markdown in JSON),
+    # finding the outermost {} is generally much safer than relying on markdown blocks.
+    # So we prefer bounding by the first '{' and the last '}' across the entire response.
+    start_idx = content.find("{")
+    end_idx = content.rfind("}")
+
+    if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+        content = content[start_idx:end_idx+1]
+
+    return content
 
 def get_tier_config(tier: str) -> dict:
     """Loads the specific model configuration from config.toml."""
@@ -103,8 +121,27 @@ class BaseInference:
         content = resp.choices[0].message.content
         
         if schema:
-            try: return schema.model_validate_json(content or "{}")
-            except: return schema.model_construct()
+            cleaned = clean_json_response(content)
+            try:
+                return schema.model_validate_json(cleaned)
+            except Exception:
+                try:
+                    data = json.loads(cleaned)
+                    return schema.model_validate(data)
+                except json.JSONDecodeError as decode_err:
+                    try:
+                        data = json.loads(cleaned[:decode_err.pos])
+                        return schema.model_validate(data)
+                    except Exception:
+                        pass
+
+                fallback_data = {}
+                for field_name, field_info in schema.model_fields.items():
+                    if field_info.annotation == list or getattr(field_info.annotation, '__origin__', None) == list:
+                        fallback_data[field_name] = []
+                    elif field_info.annotation == dict or getattr(field_info.annotation, '__origin__', None) == dict:
+                        fallback_data[field_name] = {}
+                return schema.model_construct(**fallback_data)
             
         return content
 
