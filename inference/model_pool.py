@@ -5,11 +5,10 @@ from inference.utils import get_tier_config, build_llama_image, BaseInference
 # --- Trivial Tier (T4) ---
 _cfg_small = get_tier_config("trivial")
 @app.cls(
-    image=build_llama_image(**_cfg_small), 
+    image=build_llama_image(**_cfg_small).add_local_python_source("orchestrator"), 
     gpu="T4", 
     scaledown_window=2, 
-    timeout=600,
-    mounts=[modal.Mount.from_local_python_packages("orchestrator")]
+    timeout=600
 )
 class InferenceSmall(BaseInference):
     @modal.enter()
@@ -21,11 +20,10 @@ class InferenceSmall(BaseInference):
 # --- Simple Tier (L4) ---
 _cfg_medium = get_tier_config("simple")
 @app.cls(
-    image=build_llama_image(**_cfg_medium), 
+    image=build_llama_image(**_cfg_medium).add_local_python_source("orchestrator"), 
     gpu="L4", 
     scaledown_window=2, 
-    timeout=600,
-    mounts=[modal.Mount.from_local_python_packages("orchestrator")]
+    timeout=600
 )
 class InferenceMedium(BaseInference):
     @modal.enter()
@@ -37,11 +35,10 @@ class InferenceMedium(BaseInference):
 # --- Expert Tier (L40S) ---
 _cfg_large = get_tier_config("expert")
 @app.cls(
-    image=build_llama_image(**_cfg_large), 
+    image=build_llama_image(**_cfg_large).add_local_python_source("orchestrator"), 
     gpu="L40S", 
     scaledown_window=2, 
-    timeout=1800,
-    mounts=[modal.Mount.from_local_python_packages("orchestrator")]
+    timeout=1800
 )
 class InferenceLarge(BaseInference):
     @modal.enter()
