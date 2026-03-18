@@ -7,6 +7,7 @@ from orchestrator.difficulty import compression_ratio, difficulty_to_tier
 from orchestrator.supervisor import supervisor_node, conversation_node, direct_execute_node
 from orchestrator.task_parser import parse_prompt
 from orchestrator.graph_memory import TriGraphMemory
+from orchestrator.llm_client import chat_completion
 
 class AgentState(TypedDict, total=False):
     messages: Annotated[List[dict], operator.add]
@@ -46,6 +47,63 @@ def decompose_and_evaluate(state: AgentState):
         "messages": [{"role": "assistant", "content": response_text}]
     }
 
+def execute_tasks(state: AgentState):
+    """Executes the decomposed tasks sequentially."""
+    print("🚀 [Jules] Executing task graph...")
+    dag_dict = state.get("dag", {})
+    tasks = dag_dict.get("tasks", [])
+    
+    execution_results = []
+    overall_content = "### Task Execution Phase\n\n"
+
+    for i, task in enumerate(tasks, 1):
+        desc = task.get("description", "")
+        tool = task.get("tool_hint", "python")
+        task_type = task.get("task_type", "transform")
+        
+        print(f"   ⏳ Running Task {i}/{len(tasks)}: {desc[:50]}...")
+        overall_content += f"#### Task {i}: {task_type.upper()}\n**Objective:** {desc}\n\n"
+        
+        # 1. Ask the LLM to generate the code for this specific atomic task
+        sys_prompt = "You are an expert software agent. Write a Python script to accomplish the exact task provided. Output ONLY valid Python code wrapped in ```python ... ``` markdown blocks. Do not add conversational filler."
+        user_req = f"Task Context: {state.get('user_prompt')}\n\nAtomic Task to implement: {desc}\n\nReturn the python code to execute this."
+        
+        raw_code_response = chat_completion(
+            [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_req}
+            ],
+            model="llm",
+            temperature=0.1
+        )
+        
+        # Determine the string output
+        if hasattr(raw_code_response, 'choices'):
+            code_output = raw_code_response.choices[0].message.content
+        else:
+            code_output = str(raw_code_response)
+
+        overall_content += f"**Generated Code:**\n{code_output}\n\n"
+
+        # 2. Execute the code in the sandbox
+        if tool == "python" or not tool:  # default to python if empty
+            exec_result = execute_code(code_output)
+            overall_content += f"**Console Output:**\n```text\n{exec_result}\n```\n\n---\n\n"
+        else:
+            exec_result = f"Skipped: Tool '{tool}' is not currently supported in this sandbox."
+            overall_content += f"**Console Output:**\n{exec_result}\n\n---\n\n"
+
+        execution_results.append({
+            "task_id": task.get("id"),
+            "result": exec_result
+        })
+
+    return {
+        "messages": [{"role": "assistant", "content": overall_content}],
+        "final_output": {"results": execution_results}
+    }
+
+
 def route_intent(state: AgentState):
     # Read the classification from the supervisor node
     intent = state.get("intent", "DECOMPOSE")
@@ -63,6 +121,7 @@ workflow.add_node("supervisor", supervisor_node)
 workflow.add_node("conversation", conversation_node)
 workflow.add_node("direct_execute", direct_execute_node)
 workflow.add_node("decompose", decompose_and_evaluate)
+workflow.add_node("execute_tasks", execute_tasks)  # ADDED EXECUTION NODE
 
 workflow.set_entry_point("supervisor")
 
@@ -76,9 +135,11 @@ workflow.add_conditional_edges(
     }
 )
 
+# CHANGED: Graph structure now routes decompose -> execute_tasks -> END
 workflow.add_edge("conversation", END)
 workflow.add_edge("direct_execute", END)
-workflow.add_edge("decompose", END) 
+workflow.add_edge("decompose", "execute_tasks") 
+workflow.add_edge("execute_tasks", END)
 
 agent_executor = workflow.compile()
 
