@@ -63,12 +63,26 @@ def conditional_complexity(task_description: str, knowledge_context: str) -> flo
 # ---------------------------------------------------------------------------
 def epistemic_coverage(task_id: str, reranker_edges: list) -> float:
     """How well does the knowledge graph cover this task? [0=no coverage, 1=full].
+
     Uses cross-encoder reranker scores from the Tri-Graph retrieval.
-    High coverage → low difficulty (we already know how to do this).
+    High coverage -> low difficulty (we already know how to do this).
+
+    Scores are filtered to edges whose task_id matches, or to all edges when
+    the reranker returns global (non-task-specific) nodes — the previous
+    ``or True`` caused every edge to count for every task, defeating the
+    per-task assessment entirely.
     """
-    scores = [e.score for e in reranker_edges if getattr(e, "task_id", None) == task_id or True]
+    # Prefer task-specific edges; fall back to all edges only when none are
+    # tagged with a task_id (i.e. the reranker returned generic knowledge nodes).
+    task_specific = [
+        e.score for e in reranker_edges
+        if getattr(e, "task_id", None) == task_id
+    ]
+    scores = task_specific if task_specific else [
+        e.score for e in reranker_edges if hasattr(e, "score")
+    ]
     if not scores:
-        return 0.0  # No coverage = hardest
+        return 0.0  # No coverage = maximum difficulty
     return sum(scores) / len(scores)
 # ---------------------------------------------------------------------------
 # Signal 3: Structural Load (DAG topology)
