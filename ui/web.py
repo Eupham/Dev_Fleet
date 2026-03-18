@@ -20,6 +20,7 @@ web_image = (
 )
 
 try:
+    import json
     import chainlit as cl
     import orjson
 
@@ -192,6 +193,10 @@ try:
                 state_snapshot = update["state_snapshot"]
                 graphs_dict    = update["graphs"]
                 node_update    = update.get("node_update", {})
+                # model_info and sandbox_results are hoisted to the top-level
+                # yield dict by agent_loop_stream so they are always available.
+                step_model_info     = update.get("model_info") or node_update.get("model_info") or {}
+                step_sandbox_results = update.get("sandbox_results") or node_update.get("sandbox_results") or []
 
                 if step_name == "keep-alive":
                     continue
@@ -217,16 +222,24 @@ try:
                         else:
                             content_lines.append("**Codebase scan:** No relevant files found — proceeding with empty context.")
 
-                    elif step_name == "Decompose":
+                    elif step_name in ("Decompose", "decompose"):
                         dag = node_update.get("dag") or state_snapshot.get("dag")
                         if dag:
                             tasks = dag.get("tasks", []) if isinstance(dag, dict) else getattr(dag, "tasks", [])
+                            diff_scores = (
+                                node_update.get("difficulty_scores")
+                                or state_snapshot.get("difficulty_scores")
+                                or {}
+                            )
                             content_lines.append(f"**{len(tasks)} tasks decomposed:**")
                             for i, t in enumerate(tasks, 1):
-                                desc = t.get("description", "") if isinstance(t, dict) else getattr(t, "description", "")
-                                hint = t.get("tool_hint", "") if isinstance(t, dict) else getattr(t, "tool_hint", "")
-                                hint_tag = f" `[{hint}]`" if hint else ""
-                                content_lines.append(f"{i}. {desc}{hint_tag}")
+                                desc  = t.get("description", "") if isinstance(t, dict) else getattr(t, "description", "")
+                                hint  = t.get("tool_hint", "")   if isinstance(t, dict) else getattr(t, "tool_hint", "")
+                                tid   = t.get("id", "")           if isinstance(t, dict) else getattr(t, "id", "")
+                                score_meta = diff_scores.get(tid, {})
+                                tier_tag   = f" `{score_meta.get('tier', '')} K={score_meta.get('score', 0):.2f}`" if score_meta else ""
+                                hint_tag   = f" `[{hint}]`" if hint else ""
+                                content_lines.append(f"{i}. {desc}{hint_tag}{tier_tag}")
 
                     elif step_name == "Rerank_and_Retrieve":
                         msgs = node_update.get("messages", [])
@@ -240,27 +253,38 @@ try:
                                 "against semantic and procedural graphs."
                             )
 
-                    elif step_name == "Execute":
-                        results = node_update.get("sandbox_results", [])
-                        if results:
-                            latest   = results[-1]
-                            stdout   = latest.get("stdout", "")   if isinstance(latest, dict) else getattr(latest, "stdout", "")
-                            stderr   = latest.get("stderr", "")   if isinstance(latest, dict) else getattr(latest, "stderr", "")
-                            exit_code = latest.get("exit_code", 0) if isinstance(latest, dict) else getattr(latest, "exit_code", 0)
-                            code     = latest.get("code", "")     if isinstance(latest, dict) else getattr(latest, "code", "")
-                            task_desc = latest.get("task_description", "") if isinstance(latest, dict) else getattr(latest, "task_description", "")
-                            tool_hint = latest.get("tool_hint", "") if isinstance(latest, dict) else getattr(latest, "tool_hint", "")
-                            status   = "✅ Success" if exit_code == 0 else "❌ Failed"
-                            if task_desc:
-                                content_lines.append(f"**Task:** {task_desc}")
-                            if code and tool_hint:
-                                content_lines.append(f"**Generated code** (`{tool_hint}`):\n```{tool_hint}\n{code[:1500]}\n```")
-                            if stdout:
-                                content_lines.append(f"**{status}:**\n```\n{stdout[:2000]}\n```")
-                            elif exit_code == 0:
-                                content_lines.append(f"**{status}** (no output)")
-                            if stderr and exit_code != 0:
-                                content_lines.append(f"**Stderr:**\n```\n{stderr[:500]}\n```")
+                    elif step_name == "execute_single_task":
+                        # --- Model / GPU badge ---
+                        if step_model_info:
+                            tier  = step_model_info.get("tier", "?")
+                            model = step_model_info.get("model", "?")
+                            gpu   = step_model_info.get("gpu", "?")
+                            content_lines.append(
+                                f"**Model:** `{model}` | **GPU:** `{gpu}` | **Tier:** `{tier}`"
+                            )
+
+                        # --- Tool call results ---
+                        if step_sandbox_results:
+                            content_lines.append(
+                                f"\n**Tool calls ({len(step_sandbox_results)} total):**"
+                            )
+                            for r in step_sandbox_results:
+                                tool   = r.get("tool", "?") if isinstance(r, dict) else getattr(r, "tool", "?")
+                                args   = r.get("args", {})   if isinstance(r, dict) else getattr(r, "args", {})
+                                output = r.get("output", "") if isinstance(r, dict) else getattr(r, "output", "")
+
+                                # Truncate args for display
+                                args_display = json.dumps(args)
+                                if len(args_display) > 120:
+                                    args_display = args_display[:120] + "..."
+
+                                if tool == "[model_text]":
+                                    content_lines.append(f"\n**[model reasoning]**\n```\n{output[:600]}\n```")
+                                else:
+                                    content_lines.append(
+                                        f"\n**`{tool}`** `{args_display}`\n"
+                                        f"```\n{output[:800]}\n```"
+                                    )
                         else:
                             msgs = node_update.get("messages", [])
                             if msgs:
