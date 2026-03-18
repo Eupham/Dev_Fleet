@@ -6,6 +6,7 @@ from orchestrator.tool_sandbox import execute_code
 from orchestrator.difficulty import compression_ratio, difficulty_to_tier
 from orchestrator.supervisor import supervisor_node, conversation_node, direct_execute_node
 from orchestrator.task_parser import parse_prompt
+from orchestrator.graph_memory import TriGraphMemory
 
 class AgentState(TypedDict, total=False):
     messages: Annotated[List[dict], operator.add]
@@ -83,7 +84,6 @@ agent_executor = workflow.compile()
 
 async def agent_loop_stream(prompt: str):
     """Async generator for Chainlit to stream graph events."""
-    # Note: user_prompt must be seeded into the state for supervisor_node to read it
     initial_state = {
         "messages": [{"role": "user", "content": prompt}], 
         "user_prompt": prompt,
@@ -92,5 +92,13 @@ async def agent_loop_stream(prompt: str):
     
     async for event in agent_executor.astream(initial_state):
         for node, values in event.items():
-            if "messages" in values and values["messages"]:
-                yield values["messages"][-1]["content"]
+            # Load the current memory state for the UI renderer
+            mem = TriGraphMemory.load()
+            
+            # Yield the dictionary structure ui/web.py expects
+            yield {
+                "step": node,
+                "state_snapshot": values,
+                "node_update": values,
+                "graphs": mem.to_dict()
+            }
