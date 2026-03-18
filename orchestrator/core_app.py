@@ -238,7 +238,12 @@ def read_graph_state() -> dict:
     return result
 
 
-
+@app.function(
+    image=orchestrator_image,
+    volumes={"/state": graph_state_vol},
+    timeout=15 * 60,
+)
+def onboard_domain(
     domain_name: str,
     artifacts: list[str],
     artifact_filenames: list[str] | None = None,
