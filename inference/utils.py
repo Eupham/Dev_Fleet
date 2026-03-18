@@ -59,7 +59,7 @@ self.server_process = subprocess.Popen([
                 "--host", "127.0.0.1",
                 "--port", "8080",
                 "--log-disable"  # Add this flag to suppress verbose startup logs
-            ])])
+            ])
             
             self.client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="sk-local-run")
             
