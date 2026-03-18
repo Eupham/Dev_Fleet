@@ -51,14 +51,15 @@ class BaseInference:
                 
             print(f"Booting raw llama-server for {cfg.get('repo_id')}...")
             
-            self.server_process = subprocess.Popen([
+self.server_process = subprocess.Popen([
                 "llama-server",
                 "-m", model_path,
                 "-c", str(cfg["n_ctx"]),
-                "-ngl", "99",          # Offload all layers to GPU
+                "-ngl", "99",          
                 "--host", "127.0.0.1",
-                "--port", "8080"
-            ])
+                "--port", "8080",
+                "--log-disable"  # Add this flag to suppress verbose startup logs
+            ])])
             
             self.client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="sk-local-run")
             
