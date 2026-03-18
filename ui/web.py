@@ -163,6 +163,102 @@ try:
         return f"```mermaid\n{mermaid_src}\n```"
 
     # ---------------------------------------------------------------------------
+    # Knowledge Graph Browser — persistent action button + callback
+    # ---------------------------------------------------------------------------
+
+    @cl.on_chat_start
+    async def on_chat_start():
+        """Send a persistent action button so the user can inspect the knowledge
+        graph at any time — including after a session has finished."""
+        await cl.Message(
+            content=(
+                "**Dev Fleet** is ready.\n\n"
+                "Use the button below to browse the persisted knowledge graph "
+                "at any time, even after a run completes."
+            ),
+            actions=[
+                cl.Action(
+                    name="browse_knowledge",
+                    label="Browse Knowledge Graph",
+                    description="Load and display the full Tri-Graph knowledge state from persistent storage",
+                    payload={},
+                )
+            ],
+        ).send()
+
+    @cl.action_callback("browse_knowledge")
+    async def on_browse_knowledge(action: cl.Action):
+        """Load the persisted knowledge graphs and render them as a Mermaid diagram."""
+        import networkx as nx
+
+        read_graph_state_func = modal.Function.from_name("dev_fleet", "read_graph_state")
+
+        async with cl.Step(name="Knowledge Graph Browser") as step:
+            step.output = "Loading persisted graphs from storage..."
+
+        try:
+            graph_data = await read_graph_state_func.remote.aio()
+        except Exception as e:
+            await cl.Message(
+                content=f"**Knowledge Graph Browser — Error**\n\n`{type(e).__name__}: {e}`"
+            ).send()
+            return
+
+        if not graph_data.get("persisted"):
+            await cl.Message(
+                content=(
+                    "**Knowledge Graph Browser**\n\n"
+                    "*No persisted graph state found. Run a task first to populate the graphs.*"
+                )
+            ).send()
+            return
+
+        total  = graph_data.get("total_nodes", 0)
+        ep_n   = graph_data["episodic"]["count"]
+        sem_n  = graph_data["semantic"]["count"]
+        proc_n = graph_data["procedural"]["count"]
+
+        # Build NetworkX graphs from the flat node/edge lists
+        def _build_nx(graph_dict: dict) -> nx.DiGraph:
+            g = nx.DiGraph()
+            for node in graph_dict.get("nodes", []):
+                g.add_node(
+                    node["id"],
+                    label=node.get("label", ""),
+                    content=node.get("content", ""),
+                    status=node.get("status", ""),
+                )
+            for edge in graph_dict.get("edges", []):
+                g.add_edge(edge["source"], edge["target"], relation=edge.get("relation", ""))
+            return g
+
+        # Reconstruct a graphs_dict compatible with _render_trigraph
+        graphs_dict_for_render = {
+            "episodic":   nx.node_link_data(_build_nx(graph_data["episodic"]),   edges="edges"),
+            "semantic":   nx.node_link_data(_build_nx(graph_data["semantic"]),   edges="edges"),
+            "procedural": nx.node_link_data(_build_nx(graph_data["procedural"]), edges="edges"),
+        }
+
+        mermaid_str = _render_trigraph(graphs_dict_for_render, nx)
+        summary = (
+            f"**Tri-Graph Knowledge Browser**\n\n"
+            f"**Total nodes:** {total} "
+            f"(Episodic: {ep_n} | Semantic: {sem_n} | Procedural: {proc_n})\n\n"
+        )
+
+        await cl.Message(
+            content=summary + (mermaid_str if mermaid_str else "*All graphs are empty.*"),
+            actions=[
+                cl.Action(
+                    name="browse_knowledge",
+                    label="Refresh Knowledge Graph",
+                    description="Reload the latest persisted graph state",
+                    payload={},
+                )
+            ],
+        ).send()
+
+    # ---------------------------------------------------------------------------
     # Message handler
     # ---------------------------------------------------------------------------
 
@@ -195,14 +291,30 @@ try:
                 node_update    = update.get("node_update", {})
                 # model_info and sandbox_results are hoisted to the top-level
                 # yield dict by agent_loop_stream so they are always available.
-                step_model_info     = update.get("model_info") or node_update.get("model_info") or {}
+                step_model_info      = update.get("model_info") or node_update.get("model_info") or {}
                 step_sandbox_results = update.get("sandbox_results") or node_update.get("sandbox_results") or []
+                # Execution context
+                step_task_desc   = update.get("task_desc") or node_update.get("task_desc") or ""
+                step_task_idx    = update.get("task_idx")  or node_update.get("task_idx")  or 0
+                step_total_tasks = update.get("total_tasks") or node_update.get("total_tasks") or 0
+                step_subtask_ids = update.get("subtask_ids") or node_update.get("subtask_ids") or []
+                step_gpu_uptime  = update.get("gpu_uptime_s") or node_update.get("gpu_uptime_s") or 0.0
 
                 if step_name == "keep-alive":
                     continue
 
-                # --- Step panel ---
-                async with cl.Step(name=step_name) as step:
+                # Use the task description as the step name for execute steps
+                # so the sidebar shows "Task 2/5: Conduct research…" instead of
+                # the node name "execute_single_task".
+                if step_name == "execute_single_task" and step_task_desc:
+                    display_name = (
+                        f"Task {step_task_idx}/{step_total_tasks}: "
+                        f"{step_task_desc[:60]}{'...' if len(step_task_desc) > 60 else ''}"
+                    )
+                else:
+                    display_name = step_name
+
+                async with cl.Step(name=display_name) as step:
                     content_lines = []
 
                     if step_name == "Supervisor":
@@ -254,14 +366,39 @@ try:
                             )
 
                     elif step_name == "execute_single_task":
-                        # --- Model / GPU badge ---
+                        # --- Model / GPU badge with uptime ---
                         if step_model_info:
                             tier  = step_model_info.get("tier", "?")
                             model = step_model_info.get("model", "?")
                             gpu   = step_model_info.get("gpu", "?")
-                            content_lines.append(
-                                f"**Model:** `{model}` | **GPU:** `{gpu}` | **Tier:** `{tier}`"
+                            uptime_str = (
+                                f"{int(step_gpu_uptime // 60)}m {int(step_gpu_uptime % 60)}s"
+                                if step_gpu_uptime >= 60
+                                else f"{step_gpu_uptime:.1f}s"
                             )
+                            content_lines.append(
+                                f"**Model:** `{model}` | **GPU:** `{gpu}` "
+                                f"| **Tier:** `{tier}` | **GPU uptime:** `{uptime_str}`"
+                            )
+
+                        # --- Spawned sub-tasks ---
+                        if step_subtask_ids:
+                            dag_tasks = (
+                                state_snapshot.get("dag", {}).get("tasks", [])
+                                or node_update.get("dag", {}).get("tasks", [])
+                            )
+                            spawned_descs = [
+                                t.get("description", tid)
+                                for t in dag_tasks
+                                for tid in step_subtask_ids
+                                if (t.get("id") == tid)
+                            ]
+                            if spawned_descs:
+                                content_lines.append(
+                                    f"\n**Spawned {len(spawned_descs)} sub-task(s):**"
+                                )
+                                for i, sd in enumerate(spawned_descs, 1):
+                                    content_lines.append(f"  {i}. {sd}")
 
                         # --- Tool call results ---
                         if step_sandbox_results:
@@ -273,7 +410,6 @@ try:
                                 args   = r.get("args", {})   if isinstance(r, dict) else getattr(r, "args", {})
                                 output = r.get("output", "") if isinstance(r, dict) else getattr(r, "output", "")
 
-                                # Truncate args for display
                                 args_display = json.dumps(args)
                                 if len(args_display) > 120:
                                     args_display = args_display[:120] + "..."

@@ -176,24 +176,28 @@ def dispatch_tool(name: str, arguments: dict) -> str:
     try:
         if name == "web_search":
             query = arguments.get("query", "")
+            # ddgs is pre-installed in the container image — no runtime install needed.
             code = f"""
+from ddgs import DDGS
+results = []
 try:
-    from duckduckgo_search import DDGS
-except ImportError:
-    import subprocess
-    subprocess.run(["pip", "install", "-q", "duckduckgo-search"], capture_output=True)
-    from duckduckgo_search import DDGS
+    with DDGS() as ddgs:
+        results = list(ddgs.text({repr(query)}, max_results=6))
+except Exception as e:
+    print(f"Search error: {{e}}")
 
-with DDGS() as ddgs:
-    results = list(ddgs.text({repr(query)}, max_results=5))
+if results:
     for r in results:
         print(f"## {{r.get('title', '')}}")
-        print(f"{{r.get('body', '')}}")
-        print(f"URL: {{r.get('href', '')}}")
+        print(r.get('body', '') or r.get('snippet', ''))
+        print(f"URL: {{r.get('href', '') or r.get('url', '')}}")
         print()
+else:
+    print("No results found for: {repr(query)}")
 """
             result = forward(code=code, language="python", timeout=30)
-            return result.get("stdout", "") or "No search results."
+            output = result.get("stdout", "").strip()
+            return output if output else f"No search results for: {query}"
 
         elif name == "run_code":
             language = arguments.get("language", "python")
