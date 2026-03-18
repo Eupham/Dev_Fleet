@@ -131,72 +131,29 @@ AVAILABLE_TOOLS = [
 def _dispatch_tool(name: str, arguments: dict) -> str:
     """Execute a tool call via the actual tool_sandbox module.
 
-    Routes to tool_sandbox.forward() which uses subprocess to run
-    code in the sandbox environment. This is the bridge between
-    the LLM's tool calls and actual system execution.
+    Routes to tool_sandbox.py implementations. This properly adheres to
+    Separation of Concerns.
     """
+    import orchestrator.tool_sandbox as tool_sandbox
     try:
         if name == "web_search":
             query = arguments.get("query", "")
-            # Run web search via Python in sandbox
-            code = f"""
-try:
-    from duckduckgo_search import DDGS
-except ImportError:
-    import subprocess
-    subprocess.run(["pip", "install", "-q", "duckduckgo-search"], capture_output=True)
-    from duckduckgo_search import DDGS
-
-with DDGS() as ddgs:
-    results = list(ddgs.text({repr(query)}, max_results=5))
-    for r in results:
-        print(f"## {{r.get('title', '')}}")
-        print(f"{{r.get('body', '')}}")
-        print(f"URL: {{r.get('href', '')}}")
-        print()
-"""
-            result = forward(code=code, language="python", timeout=30)
-            return result.get("stdout", "") or "No search results."
+            return tool_sandbox.web_search(query)
 
         elif name == "run_code":
             language = arguments.get("language", "python")
             code = arguments.get("code", "")
-            result = forward(code=code, language=language, timeout=30)
+            result = tool_sandbox.forward(code=code, language=language, timeout=30)
             return result.get("stdout", "") or "Code executed (no output)."
 
         elif name == "write_file":
             path = arguments.get("path", "")
             content = arguments.get("content", "")
-            # Use json.dumps for safe string embedding
-            code = f"""
-import os, json
-path = {json.dumps(path)}
-content = {json.dumps(content)}
-os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-with open(path, "w") as f:
-    f.write(content)
-print(f"Written {{len(content)}} chars to {{path}}")
-"""
-            result = forward(code=code, language="python", timeout=10)
-            return result.get("stdout", "") or "File written."
+            return tool_sandbox.write_file(path, content)
 
         elif name == "read_file":
             path = arguments.get("path", "")
-            code = f"""
-path = {json.dumps(path)}
-try:
-    with open(path, "r") as f:
-        content = f.read()
-    print(content[:5000])
-    if len(content) > 5000:
-        print(f"\\n... (truncated, total {{len(content)}} chars)")
-except FileNotFoundError:
-    print(f"File not found: {{path}}")
-except Exception as e:
-    print(f"Error: {{e}}")
-"""
-            result = forward(code=code, language="python", timeout=10)
-            return result.get("stdout", "") or "File read failed."
+            return tool_sandbox.read_file(path)
 
         elif name == "task_complete":
             return f"TASK_COMPLETE: {arguments.get('summary', 'Done')}"

@@ -240,31 +240,78 @@ try:
                                 "against semantic and procedural graphs."
                             )
 
-                    elif step_name == "Execute":
+                    elif step_name in ("Execute", "execute_single_task"):
+                        # Add GPU/Model info based on the node's task difficulty tier
+                        # First, handle sandbox code execution results for full visibility
                         results = node_update.get("sandbox_results", [])
                         if results:
-                            latest   = results[-1]
-                            stdout   = latest.get("stdout", "")   if isinstance(latest, dict) else getattr(latest, "stdout", "")
-                            stderr   = latest.get("stderr", "")   if isinstance(latest, dict) else getattr(latest, "stderr", "")
-                            exit_code = latest.get("exit_code", 0) if isinstance(latest, dict) else getattr(latest, "exit_code", 0)
-                            code     = latest.get("code", "")     if isinstance(latest, dict) else getattr(latest, "code", "")
-                            task_desc = latest.get("task_description", "") if isinstance(latest, dict) else getattr(latest, "task_description", "")
-                            tool_hint = latest.get("tool_hint", "") if isinstance(latest, dict) else getattr(latest, "tool_hint", "")
-                            status   = "✅ Success" if exit_code == 0 else "❌ Failed"
-                            if task_desc:
-                                content_lines.append(f"**Task:** {task_desc}")
-                            if code and tool_hint:
-                                content_lines.append(f"**Generated code** (`{tool_hint}`):\n```{tool_hint}\n{code[:1500]}\n```")
-                            if stdout:
-                                content_lines.append(f"**{status}:**\n```\n{stdout[:2000]}\n```")
-                            elif exit_code == 0:
-                                content_lines.append(f"**{status}** (no output)")
-                            if stderr and exit_code != 0:
-                                content_lines.append(f"**Stderr:**\n```\n{stderr[:500]}\n```")
-                        else:
-                            msgs = node_update.get("messages", [])
-                            if msgs:
-                                content_lines.append(msgs[-1])
+                            for res_obj in results:
+                                stdout   = res_obj.get("stdout", "")   if isinstance(res_obj, dict) else getattr(res_obj, "stdout", "")
+                                stderr   = res_obj.get("stderr", "")   if isinstance(res_obj, dict) else getattr(res_obj, "stderr", "")
+                                exit_code = res_obj.get("exit_code", 0) if isinstance(res_obj, dict) else getattr(res_obj, "exit_code", 0)
+                                code     = res_obj.get("code", "")     if isinstance(res_obj, dict) else getattr(res_obj, "code", "")
+                                task_desc = res_obj.get("task_description", "") if isinstance(res_obj, dict) else getattr(res_obj, "task_description", "")
+                                tool_hint = res_obj.get("tool_hint", "") if isinstance(res_obj, dict) else getattr(res_obj, "tool_hint", "")
+                                status   = "✅ Success" if exit_code == 0 else "❌ Failed"
+                                if task_desc:
+                                    content_lines.append(f"**Task:** {task_desc}")
+                                if code and tool_hint:
+                                    content_lines.append(f"**Generated code** (`{tool_hint}`):\n```{tool_hint}\n{code[:1500]}\n```")
+                                if stdout:
+                                    content_lines.append(f"**{status}:**\n```\n{stdout[:2000]}\n```")
+                                elif exit_code == 0:
+                                    content_lines.append(f"**{status}** (no output)")
+                                if stderr and exit_code != 0:
+                                    content_lines.append(f"**Stderr:**\n```\n{stderr[:500]}\n```")
+                            content_lines.append("---")
+
+                        # Print all message summaries and parsed hardware specs
+                        msgs = node_update.get("messages", [])
+                        if msgs:
+                            for msg in msgs:
+                                msg_content = msg.get("content", "") if isinstance(msg, dict) else str(msg)
+
+                                # If it's the final markdown summary header, parse it for hardware
+                                if msg_content.startswith("#### Task "):
+                                    import re
+                                    tier_match = re.search(r"\((\w+), K=", msg_content)
+                                    tier = tier_match.group(1).lower() if tier_match else "moderate"
+
+                                    # Fetch dynamic hardware stats
+                                    try:
+                                        from orchestrator.llm_client import _TIER_MODEL_ALIAS
+                                        alias = _TIER_MODEL_ALIAS.get(tier, "llm")
+                                        # Use appropriate class based on the alias
+                                        if alias == "llm-small":
+                                            cls_ref = modal.Cls.from_name("dev_fleet", "InferenceSmall")
+                                        elif alias == "llm-medium":
+                                            cls_ref = modal.Cls.from_name("dev_fleet", "InferenceMedium")
+                                        elif alias == "llm-large":
+                                            cls_ref = modal.Cls.from_name("dev_fleet", "InferenceLarge")
+                                        else:
+                                            cls_ref = modal.Cls.from_name("dev_fleet", "Inference")
+
+                                        # We don't want to block the UI loop for a slow cold start just for stats,
+                                        # but remote.aio() lets us fetch stats quickly if container is warm.
+                                        # Since task just executed, it is guaranteed warm.
+                                        import asyncio
+                                        stats = await asyncio.wait_for(cls_ref().get_hardware_stats.remote.aio(), timeout=3.0)
+
+                                        uptime_m, uptime_s = divmod(stats.get('uptime_sec', 0), 60)
+                                        hw_info = (
+                                            f"**Model:** {stats.get('model')} | "
+                                            f"**GPU:** {stats.get('gpu')} | "
+                                            f"**Uptime:** {uptime_m}m {uptime_s}s | "
+                                            f"**Util:** {stats.get('gpu_utilization')} | "
+                                            f"**VRAM:** {stats.get('vram_used')}"
+                                        )
+                                        content_lines.append(hw_info)
+                                    except Exception as e:
+                                        import logging
+                                        logging.getLogger("dev_fleet.ui").warning(f"Failed to fetch HW stats: {e}")
+                                        content_lines.append(f"**Tier Assignment:** {tier} *(HW stats unavailable)*")
+
+                                content_lines.append(msg_content)
 
                     elif step_name == "Handle_Failure":
                         attempt = state_snapshot.get("current_attempt", 1)

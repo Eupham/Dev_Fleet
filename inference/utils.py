@@ -48,6 +48,8 @@ def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
     )
 class BaseInference:
     def start_logic(self, cfg: dict):
+        import time
+        self.start_time = time.time()
         model_path = f"/root/models/{cfg['filename']}"
         if not os.path.exists(model_path):
             raise RuntimeError(f"CRITICAL: File NOT found at {model_path}.")

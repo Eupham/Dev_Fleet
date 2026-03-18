@@ -17,6 +17,23 @@ class InferenceSmall(BaseInference):
     @modal.method()
     def generate(self, **kwargs): return self.generate_logic(**kwargs)
 
+    @modal.method()
+    def get_hardware_stats(self) -> dict:
+        import subprocess, time
+        stats = {
+            "model": _cfg_small.get("repo_id", "Unknown Model"),
+            "gpu": "T4",
+            "uptime_sec": int(time.time() - getattr(self, "start_time", time.time())),
+            "gpu_utilization": "0%", "vram_used": "0MB"
+        }
+        try:
+            out = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, check=True).stdout.strip().split(',')
+            if len(out) == 2:
+                stats["gpu_utilization"] = f"{out[0].strip()}%"
+                stats["vram_used"] = f"{out[1].strip()} MB"
+        except Exception: pass
+        return stats
+
 # --- Simple Tier (L4) ---
 _cfg_medium = get_tier_config("simple")
 @app.cls(
@@ -32,6 +49,23 @@ class InferenceMedium(BaseInference):
     @modal.method()
     def generate(self, **kwargs): return self.generate_logic(**kwargs)
 
+    @modal.method()
+    def get_hardware_stats(self) -> dict:
+        import subprocess, time
+        stats = {
+            "model": _cfg_medium.get("repo_id", "Unknown Model"),
+            "gpu": "L4",
+            "uptime_sec": int(time.time() - getattr(self, "start_time", time.time())),
+            "gpu_utilization": "0%", "vram_used": "0MB"
+        }
+        try:
+            out = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, check=True).stdout.strip().split(',')
+            if len(out) == 2:
+                stats["gpu_utilization"] = f"{out[0].strip()}%"
+                stats["vram_used"] = f"{out[1].strip()} MB"
+        except Exception: pass
+        return stats
+
 # --- Expert Tier (L40S) ---
 _cfg_large = get_tier_config("expert")
 @app.cls(
@@ -46,3 +80,20 @@ class InferenceLarge(BaseInference):
     
     @modal.method()
     def generate(self, **kwargs): return self.generate_logic(**kwargs)
+
+    @modal.method()
+    def get_hardware_stats(self) -> dict:
+        import subprocess, time
+        stats = {
+            "model": _cfg_large.get("repo_id", "Unknown Model"),
+            "gpu": "L40S",
+            "uptime_sec": int(time.time() - getattr(self, "start_time", time.time())),
+            "gpu_utilization": "0%", "vram_used": "0MB"
+        }
+        try:
+            out = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, check=True).stdout.strip().split(',')
+            if len(out) == 2:
+                stats["gpu_utilization"] = f"{out[0].strip()}%"
+                stats["vram_used"] = f"{out[1].strip()} MB"
+        except Exception: pass
+        return stats

@@ -18,20 +18,21 @@ if TYPE_CHECKING:
 # Signal 1: Kolmogorov Proxy via Compression
 # ---------------------------------------------------------------------------
 def compression_complexity(text: str) -> float:
-    """Approximate K(text) via gzip compression ratio.
-    Returns a normalized score in [0, 1] where:
-      - 0.0 = highly compressible (repetitive, low complexity)
-      - 1.0 = incompressible (high algorithmic information content)
-    This is a standard approximation: gzip length provides an upper bound
-    on Kolmogorov complexity (Li & Vitányi, "An Introduction to Kolmogorov
-    Complexity and Its Applications", Chapter 8).
+    """Approximate K(text) via gzip compression.
+    Returns a normalized score in [0, 1] based on the absolute compressed
+    size of the text. Short/simple tasks will have a low score, while
+    long, detailed tasks with high information content will approach 1.0.
+    Gzip length provides an upper bound on Kolmogorov complexity.
     """
-    if not text or len(text) < 10:
-        return 0.0
+    if not text or len(text) < 5:
+        return 0.05
     raw = text.encode("utf-8")
     compressed = gzip.compress(raw, compresslevel=9)
-    # Ratio: compressed_size / raw_size. Pure random ≈ 1.0, repetitive ≈ 0.0
-    return min(1.0, len(compressed) / len(raw))
+    # Subtract ~20 bytes of gzip header overhead to measure true payload complexity
+    comp_size = max(0, len(compressed) - 20)
+    # Scale against a nominal "highly complex" task threshold (e.g., 250 bytes of compressed information)
+    return min(1.0, comp_size / 250.0)
+
 def conditional_complexity(task_description: str, knowledge_context: str) -> float:
     """Approximate K(task | knowledge) — conditional Kolmogorov complexity.
     Measures how much NEW information the task requires beyond what the
@@ -46,10 +47,10 @@ def conditional_complexity(task_description: str, knowledge_context: str) -> flo
     if not task_description:
         return 0.0
     if not knowledge_context or len(knowledge_context) < 10:
-        # No knowledge → maximum conditional complexity
+        # No knowledge baseline: fall back to the task's intrinsic absolute complexity
         return compression_complexity(task_description)
     def _c(s: str) -> int:
-        return len(gzip.compress(s.encode("utf-8"), compresslevel=9))
+        return max(0, len(gzip.compress(s.encode("utf-8"), compresslevel=9)) - 20)
     c_task = _c(task_description)
     c_know = _c(knowledge_context)
     c_joint = _c(task_description + "\n" + knowledge_context)
@@ -58,6 +59,7 @@ def conditional_complexity(task_description: str, knowledge_context: str) -> flo
         return 0.0
     nid = (c_joint - min(c_task, c_know)) / denominator
     return min(1.0, max(0.0, nid))
+
 # ---------------------------------------------------------------------------
 # Signal 2: Epistemic Coverage (Reranker)
 # ---------------------------------------------------------------------------
@@ -66,9 +68,10 @@ def epistemic_coverage(task_id: str, reranker_edges: list) -> float:
     Uses cross-encoder reranker scores from the Tri-Graph retrieval.
     High coverage → low difficulty (we already know how to do this).
     """
-    scores = [e.score for e in reranker_edges if getattr(e, "task_id", None) == task_id or True]
+    # Fix: Removed the erroneous `or True` which forced all edges to match
+    scores = [e.score for e in reranker_edges if getattr(e, "task_id", None) == task_id]
     if not scores:
-        return 0.0  # No coverage = hardest
+        return 0.0  # No coverage = harder, but not intrinsically maxed
     return sum(scores) / len(scores)
 # ---------------------------------------------------------------------------
 # Signal 3: Structural Load (DAG topology)

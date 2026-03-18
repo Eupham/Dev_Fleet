@@ -18,7 +18,41 @@ class Inference(BaseInference):
     @modal.method()
     def generate(self, **kwargs):
         return self.generate_logic(**kwargs)
+
+    @modal.method()
+    def get_hardware_stats(self) -> dict:
+        """
+        Fetches real-time GPU hardware stats and uptime.
+        """
+        import subprocess
+        import time
+        stats = {
+            "model": _cfg.get("repo_id", "Unknown Model"),
+            "gpu": _cfg.get("gpu", "Unknown GPU"),
+            "uptime_sec": 0,
+            "gpu_utilization": "0%",
+            "vram_used": "0MB"
+        }
         
+        # Calculate process uptime if it exists
+        if hasattr(self, "start_time"):
+            stats["uptime_sec"] = int(time.time() - self.start_time)
+
+        try:
+            # Query nvidia-smi for utilization and VRAM
+            res = subprocess.run(
+                ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, check=True
+            )
+            out = res.stdout.strip().split(',')
+            if len(out) == 2:
+                stats["gpu_utilization"] = f"{out[0].strip()}%"
+                stats["vram_used"] = f"{out[1].strip()} MB"
+        except Exception:
+            pass
+
+        return stats
+
     @modal.method()
     def ping(self) -> str:
         """
