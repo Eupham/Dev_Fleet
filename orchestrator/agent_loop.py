@@ -19,7 +19,7 @@ class AgentState(TypedDict, total=False):
 
 def decompose_and_evaluate(state: AgentState):
     """Montague Translation node."""
-    print("🤖 [Jules] Decomposing request...")
+    print("🤖 Decomposing request...")
     dag = parse_prompt(state["user_prompt"])
     drs = DRS(label="main")
     
