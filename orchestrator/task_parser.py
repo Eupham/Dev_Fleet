@@ -1,4 +1,3 @@
-# orchestrator/task_parser.py
 """Typed task decomposition — TaskDAG and AtomicTaskNode schemas.
 
 Defines four task types (QueryTask, TransformTask, VerifyTask, ComposeTask)
@@ -112,7 +111,8 @@ def validate_dag_types(tasks: list) -> None:
 
 
 class TaskDAG(BaseModel):
-    user_prompt: str
+    # CHANGED: Made user_prompt optional so the LLM doesn't have to generate it.
+    user_prompt: str = Field(default="", description="Leave empty. System will auto-fill.")
     intent_observation: str = ""
     tasks: list[AtomicTaskNode]
 
@@ -247,6 +247,8 @@ def parse_prompt(
         else:
             raise ValueError(f"Unexpected response type from remote LLM: {type(raw_response)}")
 
+        # CHANGED: Inject the prompt state back into the object after generation
+        result.user_prompt = user_prompt
         return result
 
     except Exception as exc:
