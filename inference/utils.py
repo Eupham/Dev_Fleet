@@ -1,10 +1,13 @@
 import modal
-import tomllib  # Use the built-in Python 3.11+ library
+import tomllib
 import os
+import subprocess
+import time
+import requests
+from openai import OpenAI
 
 def get_tier_config(tier: str) -> dict:
     """Loads the specific model configuration from config.toml."""
-    # tomllib requires the file to be opened in binary mode ("rb")
     with open("inference/config.toml", "rb") as f:
         config = tomllib.load(f)
     tier_cfg = config[tier]
@@ -13,28 +16,30 @@ def get_tier_config(tier: str) -> dict:
 
 def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
     """
-    Compiles engine image and downloads weights.
-    Uses the wrapper's native submodule to avoid 'undefined symbol' crashes.
+    Directly compiles the official upstream llama.cpp server to ensure
+    support for the newest architectures like Qwen 3.5.
     """
     download_url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
+    
     return (
         modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.12")
         .apt_install("build-essential", "clang", "cmake", "git", "curl", "ninja-build")
         .run_commands("ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1")
         .env({"HF_HOME": "/vol/cache"}) 
-        .pip_install("huggingface_hub", "langgraph>=1.1.2", "mcp>=1.26.0")
+        # Added requests and openai for the HTTP client
+        .pip_install("huggingface_hub", "langgraph>=1.1.2", "mcp>=1.26.0", "requests", "openai")
         .run_commands([
-            # 1. Clone the wrapper WITH its submodules. 
-            # We trust the maintainer's pinned commit for the C++ engine.
-            "git clone --depth 1 --recurse-submodules https://github.com/abetlen/llama-cpp-python.git /tmp/llama-cpp-python",  
-            # 2. FIX: We REMOVED the manual 'git checkout master' for llama.cpp.
-            # This ensures the C++ symbols match the Python ctypes definitions.
-            # 3. Keep the 'sed' fix for the broken MTMD tool just in case it's in this version too.
-            "find /tmp/llama-cpp-python -name 'CMakeLists.txt' -exec sed -i '/mtmd/d' {} +",
-            # 4. Compile with CUDA support
+            # 1. Clone the master branch of llama.cpp directly
+            "git clone https://github.com/ggerganov/llama.cpp.git /tmp/llama.cpp",
+            
+            # 2. Compile the raw server with CUDA support
             "export LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs && "
-            "cd /tmp/llama-cpp-python && "
-            "CMAKE_ARGS='-DGGML_CUDA=on -G Ninja -DLLAMA_BUILD_TOOLS=OFF' pip install ."
+            "cd /tmp/llama.cpp && "
+            "cmake -B build -DGGML_CUDA=ON -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TESTS=OFF -G Ninja && "
+            "cmake --build build --config Release && "
+            
+            # 3. Move the binary to our PATH
+            "find build -name llama-server -exec cp {} /usr/local/bin/ \\;"
         ])
         .add_local_python_source("fleet_app", copy=True)
         .add_local_file("inference/config.toml", remote_path="/root/inference/config.toml", copy=True)
@@ -46,27 +51,61 @@ def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
 
 class BaseInference:
     def start_logic(self, cfg: dict):
-        from llama_cpp import Llama
         model_path = f"/root/models/{cfg['filename']}"
-        # Diagnostic check
+        
         if not os.path.exists(model_path):
             raise RuntimeError(f"CRITICAL: File NOT found at {model_path}.")
-        print(f"Loading {cfg.get('repo_id')} from local SSD...")
-        self.llm = Llama(
-            model_path=model_path,
-            n_gpu_layers=-1, 
-            n_ctx=cfg["n_ctx"],
-            verbose=True,    
-            use_mmap=True,   
-        )
+            
+        print(f"Booting raw llama-server for {cfg.get('repo_id')}...")
+        
+        # Start the native C++ server in the background
+        self.server_process = subprocess.Popen([
+            "llama-server",
+            "-m", model_path,
+            "-c", str(cfg["n_ctx"]),
+            "-ngl", "99",          # Offload all layers to GPU
+            "--host", "127.0.0.1",
+            "--port", "8080"
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        # Poll until the server is responsive
+        self.client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="sk-local-run")
+        
+        for _ in range(60): # 60-second timeout
+            try:
+                if requests.get("http://127.0.0.1:8080/health").status_code == 200:
+                    break
+            except requests.ConnectionError:
+                time.sleep(1)
+        else:
+            raise RuntimeError("CRITICAL: llama-server failed to start within 60 seconds.")
+            
+        print("Server is online and ready!")
 
     def generate_logic(self, messages, temperature=0.3, max_tokens=4096, schema=None):
-        kwargs = {"messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+        kwargs = {
+            "model": "local-model", # The server ignores this string, but OpenAI client requires it
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+        
         if schema:
-            kwargs["response_format"] = {"type": "json_schema", "json_schema": {"schema": schema.model_json_schema()}}
-        resp = self.llm.create_chat_completion(**kwargs)
-        content = resp["choices"][0]["message"]["content"]
+            kwargs["response_format"] = {
+                "type": "json_schema", 
+                "json_schema": {"schema": schema.model_json_schema()}
+            }
+            
+        resp = self.client.chat.completions.create(**kwargs)
+        content = resp.choices[0].message.content
+        
         if schema:
             try: return schema.model_validate_json(content or "{}")
             except: return schema.model_construct()
+            
         return content
+
+    def __del__(self):
+        # Ensure the background C++ process is killed when the container winds down
+        if hasattr(self, 'server_process'):
+            self.server_process.terminate()
