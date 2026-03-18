@@ -26,11 +26,11 @@ def decompose_and_evaluate(state: AgentState):
     return {
         "dag": dag.model_dump(),
         "drs": drs.to_dict(),
-        "messages": [{"role": "assistant", "content": f"Structured logic into {len(dag.tasks)} formal frames."}]
+        "messages": [{"role": "assistant", "content": f"Planned {len(dag.tasks)} formal frames."}]
     }
 
 def execute_tasks(state: AgentState):
-    """Honest Neurosymbolic Execution: MLTT checks + Frege feedback loop."""
+    """Neurosymbolic Execution: MLTT checks + Frege feedback loop."""
     from orchestrator import tool_sandbox 
     
     drs = DRS.from_dict(state.get("drs", {"label": "main"}))
@@ -43,18 +43,17 @@ def execute_tasks(state: AgentState):
         task_id = task.get("id")
         desc = task.get("description", "")
         
-        # 1. DRT Anaphora Resolution
+        # 1. DRT Resolution
         augmented_desc = drs.augment_description(desc)
         print(f"   ⏳ Task {i}: {augmented_desc[:80]}...")
 
         # 2. State Capture (Frege Start)
         before_state = WorkspaceState.capture(tool_sandbox)
 
-        # 3. Execution (Montague -> Reality)
-        prompt = f"Implement this task in the sandbox: {augmented_desc}"
+        # 3. Execution
+        prompt = f"Implement this task in the sandbox. Context:\n{augmented_desc}"
         res = chat_completion([{"role": "user", "content": prompt}])
         
-        # chat_completion might return a Pydantic object or string
         if hasattr(res, 'choices'):
             code_text = res.choices[0].message.content
         else:
@@ -65,7 +64,7 @@ def execute_tasks(state: AgentState):
         # 4. State Capture (Frege End)
         after_state = WorkspaceState.capture(tool_sandbox)
         
-        # 5. Theoretical Update Loop
+        # 5. Theoretical Update
         delta = after_state.diff(before_state)
         ledger.record(task_id, before_state, after_state)
         drs.introduce_from_delta(task_id, delta) 
@@ -77,7 +76,7 @@ def execute_tasks(state: AgentState):
         "messages": [{"role": "assistant", "content": overall_content}]
     }
 
-# Workflow and generator logic remains standard
+# --- Graph ---
 workflow = StateGraph(AgentState)
 workflow.add_node("decompose", decompose_and_evaluate)
 workflow.add_node("execute_tasks", execute_tasks)
@@ -87,6 +86,7 @@ workflow.add_edge("execute_tasks", END)
 agent_executor = workflow.compile()
 
 async def agent_loop_stream(prompt: str):
+    """Async generator required for Chainlit UI streaming."""
     initial_state = {"messages": [{"role": "user", "content": prompt}], "user_prompt": prompt, "iteration": 0}
     async for event in agent_executor.astream(initial_state):
         for node, values in event.items():
