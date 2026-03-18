@@ -173,9 +173,71 @@ def run_agent(user_prompt: str) -> dict:
 @app.function(
     image=orchestrator_image,
     volumes={"/state": graph_state_vol},
-    timeout=10 * 60,
+    timeout=60,
 )
-def onboard_domain(
+def read_graph_state() -> dict:
+    """Return the current Tri-Graph state as a JSON-serialisable dict.
+
+    Called by the Chainlit UI knowledge-browser action to load persisted
+    graphs without triggering a full agent run.  Returns node/edge counts
+    and the full node-link serialisation for each graph.
+    """
+    import json as _json
+    from orchestrator.graph_memory import (
+        TriGraphMemory,
+        SEMANTIC_PATH,
+        PROCEDURAL_PATH,
+        EPISODIC_PATH,
+    )
+    import networkx as nx
+
+    result: dict[str, object] = {
+        "episodic":   {"nodes": [], "edges": [], "count": 0},
+        "semantic":   {"nodes": [], "edges": [], "count": 0},
+        "procedural": {"nodes": [], "edges": [], "count": 0},
+        "total_nodes": 0,
+        "persisted":   False,
+    }
+
+    any_exist = any(p.exists() for p in (SEMANTIC_PATH, PROCEDURAL_PATH, EPISODIC_PATH))
+    if not any_exist:
+        return result
+
+    result["persisted"] = True
+    mem = TriGraphMemory.load()
+
+    for graph_name, nx_graph in [
+        ("episodic",   mem.episodic),
+        ("semantic",   mem.semantic),
+        ("procedural", mem.procedural),
+    ]:
+        nodes = []
+        for node_id, data in nx_graph.nodes(data=True):
+            nodes.append({
+                "id":      node_id,
+                "label":   data.get("label", graph_name.capitalize()),
+                "content": data.get("content") or data.get("description") or "",
+                "status":  data.get("status", ""),
+            })
+        edges = [
+            {"source": u, "target": v, "relation": d.get("relation", "")}
+            for u, v, d in nx_graph.edges(data=True)
+        ]
+        result[graph_name] = {
+            "nodes": nodes,
+            "edges": edges,
+            "count": len(nodes),
+        }
+
+    result["total_nodes"] = (
+        result["episodic"]["count"]      # type: ignore[index]
+        + result["semantic"]["count"]    # type: ignore[index]
+        + result["procedural"]["count"]  # type: ignore[index]
+    )
+    return result
+
+
+
     domain_name: str,
     artifacts: list[str],
     artifact_filenames: list[str] | None = None,

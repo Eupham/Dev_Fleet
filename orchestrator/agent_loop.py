@@ -17,6 +17,7 @@ Each yielded update dict contains:
 import operator
 import json
 import re
+import time
 from typing import Annotated, List, TypedDict
 
 from langgraph.graph import StateGraph, END
@@ -58,6 +59,11 @@ def _model_info(tier: str) -> dict:
     return {"tier": tier, **meta}
 
 
+# Per-GPU-tier start time — recorded the first time a container of that tier
+# executes a task so the UI can show how long the container has been live.
+_GPU_START_TIMES: dict[str, float] = {}
+
+
 # ---------------------------------------------------------------------------
 # State Schema
 # ---------------------------------------------------------------------------
@@ -73,6 +79,12 @@ class AgentState(TypedDict, total=False):
     # Surfaced to the UI per-step
     model_info:        dict   # {tier, model, gpu, class_name}
     sandbox_results:   list   # [{tool, args, output}, ...]
+    # Execution context surfaced to the UI
+    task_desc:         str    # description of the task currently executing
+    task_idx:          int    # 1-based index for display
+    total_tasks:       int    # total task count at time of execution
+    subtask_ids:       list   # ids of any sub-tasks spawned this step
+    gpu_uptime_s:      float  # seconds the GPU container has been live
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +164,11 @@ def execute_single_task(state: AgentState) -> dict:
     tier       = task_meta.get("tier", "moderate")
     score      = task_meta.get("score", 0.5)
     info       = _model_info(tier)
+
+    # Record GPU container start time on first use of this tier.
+    gpu_key = info["gpu"]
+    if gpu_key not in _GPU_START_TIMES:
+        _GPU_START_TIMES[gpu_key] = time.monotonic()
 
     print(f"\nExecuting Task {idx + 1}/{len(tasks)}: [{tier.upper()}] "
           f"model={info['model']} gpu={info['gpu']} K={score:.2f}")
@@ -375,6 +392,10 @@ def execute_single_task(state: AgentState) -> dict:
                 print(f"    + '{st.description[:40]}...' -> {sub_tier} (K={sub_score:.2f})")
             dag_update["tasks"] = current_tasks
 
+        spawned_task_ids = [st.id for st in spawned_tasks]
+
+    gpu_uptime_s = round(time.monotonic() - _GPU_START_TIMES.get(gpu_key, time.monotonic()), 1)
+
     return {
         "dag":               dag_update,
         "drs":               drs.to_dict(),
@@ -383,6 +404,12 @@ def execute_single_task(state: AgentState) -> dict:
         "difficulty_scores": updated_scores,
         "model_info":        info,
         "sandbox_results":   sandbox_results,
+        # Execution context for the UI
+        "task_desc":         task_desc,
+        "task_idx":          idx + 1,         # 1-based
+        "total_tasks":       len(dag_update.get("tasks", tasks)),
+        "subtask_ids":       spawned_task_ids,
+        "gpu_uptime_s":      gpu_uptime_s,
         "messages": [{
             "role": "assistant",
             "content": (
@@ -499,7 +526,7 @@ async def agent_loop_stream(prompt: str):
         "sandbox_results":   [],
         "model_info":        {},
     }
-    async for event in agent_executor.astream(initial_state):
+        async for event in agent_executor.astream(initial_state):
         for node, values in event.items():
             mem = TriGraphMemory.load()
             yield {
@@ -510,4 +537,10 @@ async def agent_loop_stream(prompt: str):
                 "model_info":       values.get("model_info", {}),
                 "sandbox_results":  values.get("sandbox_results", []),
                 "difficulty_scores": values.get("difficulty_scores", {}),
+                # Execution context
+                "task_desc":        values.get("task_desc", ""),
+                "task_idx":         values.get("task_idx", 0),
+                "total_tasks":      values.get("total_tasks", 0),
+                "subtask_ids":      values.get("subtask_ids", []),
+                "gpu_uptime_s":     values.get("gpu_uptime_s", 0.0),
             }
