@@ -39,3 +39,4 @@ htmlcov/
 # Local bridge tooling (contains credentials — never commit)
 auto_deploy.py
 payload.zip
+.env
