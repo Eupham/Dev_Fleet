@@ -2,7 +2,6 @@ import subprocess
 import re
 from mcp.server.fastmcp import FastMCP
 
-# Initialize FastMCP for tool management
 mcp = FastMCP("Fleet-Sandbox")
 
 @mcp.tool()
@@ -29,8 +28,8 @@ def execute_python(code: str, timeout: int = 30):
 
 def forward(code: str, language: str = "python", timeout: int = 30) -> dict:
     """
-    FIXED: Added 'timeout' parameter to match the signature expected by 
-    WorkspaceState.capture in composition.py.
+    FIXED: Added 'timeout' parameter to support WorkspaceState.capture calls
+    in orchestrator/composition.py.
     """
     if language == "bash":
         return {"stdout": execute_bash(code, timeout=timeout)}
@@ -40,7 +39,7 @@ def execute_code(raw_content: str) -> str:
     """Linguistic extraction of code blocks for tool routing."""
     match = re.search(r"```(python|bash)\n(.*?)\n```", raw_content, re.DOTALL)
     if not match: 
-        return "No code found."
+        return "No executable code found."
     lang, code = match.groups()
     if lang == "python":
         return execute_python(code)
