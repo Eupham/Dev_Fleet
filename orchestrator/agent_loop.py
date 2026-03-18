@@ -329,18 +329,63 @@ def execute_single_task(state: AgentState) -> dict:
         ledger.record(task_id, before_state, after_state)
         drs.introduce_from_delta(task_id, delta)
 
-        # 7. Epistemic update — ingest new files into knowledge graph
+        # 7. Epistemic update — two paths:
+        #    a) File writes: index the workspace for code/prose artifacts.
+        #    b) Search results: ingest directly as episodic nodes so knowledge
+        #       accumulates even when no files are written (pure research tasks).
         new_knowledge_text = ""
+
+        # 7a — Workspace indexing (file artifacts)
         if delta.created or delta.modified:
-            print("  [Epistemic Update] Ingesting new artifacts...")
-            build_knowledge_graphs("/workspace")
+            print("  [Epistemic Update] Indexing new workspace files...")
             try:
-                mem       = TriGraphMemory.load()
-                retriever = mem.as_vector_retriever(similarity_top_k=10)
-                new_knowledge = retriever.retrieve(state["user_prompt"])
-                new_knowledge_text = "\n".join([n.text for n in new_knowledge[:5]])
-            except Exception:
-                pass
+                build_knowledge_graphs("/workspace")
+            except Exception as _idx_err:
+                print(f"  [Epistemic Update] Indexer error: {_idx_err}")
+
+        # 7b — Direct ingest of web_search results into episodic graph
+        search_results_text_parts: list[str] = []
+        for r in sandbox_results:
+            if r.get("tool") == "web_search":
+                output = r.get("output", "").strip()
+                if output and output != f"No search results for: {task_desc}":
+                    search_results_text_parts.append(output)
+
+        if search_results_text_parts:
+            print(f"  [Epistemic Update] Ingesting {len(search_results_text_parts)} search result(s) into episodic graph...")
+            import hashlib as _hl
+            mem_w = TriGraphMemory.load()
+            for i, text_block in enumerate(search_results_text_parts):
+                node_id = f"search_{task_id}_{i}_{_hl.md5(text_block[:64].encode()).hexdigest()[:8]}"
+                if node_id not in mem_w.episodic:
+                    mem_w.add_episodic_node(node_id, {
+                        "label":       "SearchResult",
+                        "description": text_block[:1000],
+                        "task_id":     task_id,
+                        "task_desc":   task_desc,
+                        "status":      "ingested",
+                    })
+            # Link episodic search nodes to the task node in the semantic graph
+            task_node_id = f"task_{task_id}"
+            if task_node_id not in mem_w.semantic:
+                mem_w.add_semantic_node(task_node_id, {
+                    "label":       "Task",
+                    "description": task_desc,
+                    "status":      "complete",
+                })
+            for i in range(len(search_results_text_parts)):
+                node_id = f"search_{task_id}_{i}_{_hl.md5(search_results_text_parts[i][:64].encode()).hexdigest()[:8]}"
+                mem_w.add_episodic_edge(node_id, task_node_id, {"relation": "supports"})
+            mem_w.save()
+
+        # Reload and get updated context for remaining task reassessment
+        try:
+            mem = TriGraphMemory.load()
+            retriever = mem.as_vector_retriever(similarity_top_k=10)
+            new_knowledge = retriever.retrieve(state["user_prompt"])
+            new_knowledge_text = "\n".join([n.text for n in new_knowledge[:5]])
+        except Exception:
+            pass
 
         # 8. Reassess remaining tasks
         remaining_tasks = tasks[idx + 1:]
@@ -526,21 +571,39 @@ async def agent_loop_stream(prompt: str):
         "sandbox_results":   [],
         "model_info":        {},
     }
-        async for event in agent_executor.astream(initial_state):
+    async for event in agent_executor.astream(initial_state):
         for node, values in event.items():
             mem = TriGraphMemory.load()
-            yield {
-                "step":             node,
-                "state_snapshot":   values,
-                "node_update":      values,
-                "graphs":           mem.to_dict(),
-                "model_info":       values.get("model_info", {}),
-                "sandbox_results":  values.get("sandbox_results", []),
-                "difficulty_scores": values.get("difficulty_scores", {}),
-                # Execution context
-                "task_desc":        values.get("task_desc", ""),
-                "task_idx":         values.get("task_idx", 0),
-                "total_tasks":      values.get("total_tasks", 0),
-                "subtask_ids":      values.get("subtask_ids", []),
-                "gpu_uptime_s":     values.get("gpu_uptime_s", 0.0),
+            # TriGraphMemory has no .to_dict() — build the serialisable form here.
+            graphs = {
+                "episodic":   _nx_to_dict(mem.episodic),
+                "semantic":   _nx_to_dict(mem.semantic),
+                "procedural": _nx_to_dict(mem.procedural),
             }
+            yield {
+                "step":              node,
+                "state_snapshot":    values,
+                "node_update":       values,
+                "graphs":            graphs,
+                "model_info":        values.get("model_info", {}),
+                "sandbox_results":   values.get("sandbox_results", []),
+                "difficulty_scores": values.get("difficulty_scores", {}),
+                "task_desc":         values.get("task_desc", ""),
+                "task_idx":          values.get("task_idx", 0),
+                "total_tasks":       values.get("total_tasks", 0),
+                "subtask_ids":       values.get("subtask_ids", []),
+                "gpu_uptime_s":      values.get("gpu_uptime_s", 0.0),
+            }
+
+
+def _nx_to_dict(g: nx.DiGraph) -> dict:
+    """Serialise a NetworkX DiGraph to a plain JSON-safe dict."""
+    nodes = [
+        {"id": n, **{k: v for k, v in d.items() if isinstance(v, (str, int, float, bool, type(None)))}}
+        for n, d in g.nodes(data=True)
+    ]
+    edges = [
+        {"source": u, "target": v, "relation": d.get("relation", "")}
+        for u, v, d in g.edges(data=True)
+    ]
+    return {"nodes": nodes, "edges": edges, "count": len(nodes)}
