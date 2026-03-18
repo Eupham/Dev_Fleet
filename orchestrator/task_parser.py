@@ -224,14 +224,31 @@ def parse_prompt(
     )
 
     try:
-        result: TaskDAG = chat_completion(
+        # 1. Get the raw response from Modal
+        raw_response = chat_completion(
             messages,
             model=model,
             temperature=0.0,
             max_tokens=2048,
             schema=TaskDAG,
         )
+        
+        # 2. Bulletproof Pydantic Re-instantiation
+        # Strip away any Cloudpickle/RPC mangling by validating the raw data locally
+        if isinstance(raw_response, TaskDAG):
+            # Extract the raw dictionary from the zombie object and rebuild
+            result = TaskDAG.model_validate(raw_response.__dict__)
+        elif isinstance(raw_response, dict):
+            # If the remote returned a raw dict, validate it
+            result = TaskDAG.model_validate(raw_response)
+        elif isinstance(raw_response, str):
+            # If the remote returned a JSON string, parse it
+            result = TaskDAG.model_validate_json(raw_response)
+        else:
+            raise ValueError(f"Unexpected response type from remote LLM: {type(raw_response)}")
+
         return result
+
     except Exception as exc:
         logger.warning(
             "Typed decomposition failed (%s) — falling back to single TransformTask.",
