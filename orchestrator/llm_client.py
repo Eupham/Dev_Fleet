@@ -1,5 +1,7 @@
 import modal
 from typing import List, Dict, Any
+from llama_index.core.llms import CustomLLM, CompletionResponse, LLMMetadata
+from llama_index.core.llms.callbacks import llm_completion_callback
 
 def query_llm(messages: List[Dict[str, str]], tier: str = "moderate", schema: Any = None) -> Any:
     """Connects to the deployed Modal Inference class and generates a response."""
@@ -46,3 +48,39 @@ def chat_completion(messages: List[Dict[str, str]], model: str = "llm", temperat
     Routes parsing tasks to the moderate tier by default.
     """
     return query_llm(messages, tier="moderate", schema=schema)
+
+class DevFleetLLM(CustomLLM):
+    """
+    A LlamaIndex CustomLLM wrapper that routes internal graph reasoning 
+    requests to the deployed Modal Inference container.
+    """
+    context_window: int = 32768
+    num_output: int = 2048
+    model_name: str = "dev-fleet-llm"
+
+    @property
+    def metadata(self) -> LLMMetadata:
+        """Get LLM metadata."""
+        return LLMMetadata(
+            context_window=self.context_window,
+            num_output=self.num_output,
+            model_name=self.model_name,
+        )
+
+    @llm_completion_callback()
+    def complete(self, prompt: str, **kwargs: Any) -> CompletionResponse:
+        """Standard completion routing through our Modal API."""
+        messages = [{"role": "user", "content": prompt}]
+        
+        # Route through the moderate tier L40S container
+        response_text = query_llm(messages, tier="moderate")
+        
+        # Ensure we always return a string for LlamaIndex
+        if not isinstance(response_text, str):
+            response_text = str(response_text)
+            
+        return CompletionResponse(text=response_text)
+
+    @llm_completion_callback()
+    def stream_complete(self, prompt: str, **kwargs: Any):
+        raise NotImplementedError("Streaming is not implemented for DevFleetLLM yet.")
