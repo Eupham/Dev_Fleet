@@ -193,7 +193,7 @@ class TriGraphMemory:
             )
         return self.property_graph
 
-@classmethod
+    @classmethod
     def configure(cls) -> None:
         """Pre-configure LlamaIndex global settings before instantiation."""
         from llama_index.core import Settings as LISettings
