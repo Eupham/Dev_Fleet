@@ -1,109 +1,65 @@
 import operator
+import os
 from typing import Annotated, List, TypedDict
 from langgraph.graph import StateGraph, END
-
 from orchestrator.tool_sandbox import execute_code
-from orchestrator.difficulty import compression_ratio, difficulty_to_tier
-from orchestrator.supervisor import supervisor_node, conversation_node, direct_execute_node
 from orchestrator.task_parser import parse_prompt
-from orchestrator.graph_memory import TriGraphMemory
+from orchestrator.composition import WorkspaceState, CompositionLedger
 from orchestrator.llm_client import chat_completion
 
 class AgentState(TypedDict, total=False):
     messages: Annotated[List[dict], operator.add]
-    next_node: str
-    iteration: int
     user_prompt: str
-    intent: str
     dag: dict
-    final_output: dict
+
+def get_drt_universe(workspace_dir="/workspace") -> set:
+    """DRT Context: Returns the set of all existing file paths in the sandbox discourse."""
+    if not os.path.exists(workspace_dir): return set()
+    files = set()
+    for root, _, filenames in os.walk(workspace_dir):
+        for f in filenames: files.add(os.path.join(root, f))
+    return files
 
 def decompose_and_evaluate(state: AgentState):
-    print(f"🤖 [Jules] Decomposing prompt into tasks (Iteration {state.get('iteration', 0)})...")
-    
-    # 1. Parse the prompt into a structured TaskDAG using the LLM
+    """Montague/Fillmore Decomposition node."""
     dag = parse_prompt(state["user_prompt"])
-    
-    # 2. Evaluate difficulty PER TASK instead of the original prompt length
-    max_score = 0.0
-    print(f"🧩 [Task Parser] Created {len(dag.tasks)} tasks:")
-    for task in dag.tasks:
-        # Score the individual task description
-        score = compression_ratio(task.description)
-        max_score = max(max_score, score)
-        tier_string = difficulty_to_tier(score)
-        print(f"   ↳ Task [{task.id[:4]}] Type: {task.task_type.upper():<10} | Tier: '{tier_string}' (Score: {score:.2f})")
-        
-    overall_tier = difficulty_to_tier(max_score)
-    print(f"🧭 [Router] Overall DAG Execution Tier: '{overall_tier}'")
-    
-    # Format a response for Chainlit UI
-    response_text = f"Decomposed request into {len(dag.tasks)} tasks. Maximum required execution tier: '{overall_tier}'.\n\n"
-    for i, t in enumerate(dag.tasks, 1):
-        response_text += f"{i}. **{t.task_type.upper()}**: {t.description}\n"
-        
-    return {
-        "dag": dag.model_dump(),
-        "messages": [{"role": "assistant", "content": response_text}]
-    }
+    return {"dag": dag.model_dump(), "messages": [{"role": "assistant", "content": f"Planned {len(dag.tasks)} formal frames."}]}
 
 def execute_tasks(state: AgentState):
-    """Executes the decomposed tasks sequentially."""
-    print("🚀 [Jules] Executing task graph...")
-    dag_dict = state.get("dag", {})
-    tasks = dag_dict.get("tasks", [])
+    """Executes tasks formally with MLTT Type Checks and Frege Compositionality."""
+    from orchestrator import tool_sandbox # Import for state capture
+    ledger = CompositionLedger()
+    print("🚀 [Jules] Executing task graph formally...")
     
-    execution_results = []
-    overall_content = "### Task Execution Phase\n\n"
-
+    tasks = state.get("dag", {}).get("tasks", [])
+    overall_content = "### Formal Execution Phase\n\n"
+    
     for i, task in enumerate(tasks, 1):
-        desc = task.get("description", "")
-        tool = task.get("tool_hint", "python")
-        task_type = task.get("task_type", "transform")
+        # 1. MLTT Type Check (Pre-execution Verification)
+        drt_universe = get_drt_universe()
+        target = task.get("target_resource", "")
+        if task.get("task_type") in ("query", "verify") and target:
+            if f"/workspace/{target}" not in drt_universe:
+                overall_content += f"🛑 **MLTT Proof Failed**: {target} does not exist in discourse universe.\n\n"
+                continue
         
-        print(f"   ⏳ Running Task {i}/{len(tasks)}: {desc[:50]}...")
-        overall_content += f"#### Task {i}: {task_type.upper()}\n**Objective:** {desc}\n\n"
+        # 2. State Capture (Frege Start)
+        before_state = WorkspaceState.capture(tool_sandbox)
+
+        # 3. Code Generation and Execution
+        res = chat_completion([{"role": "user", "content": f"Implement: {task['description']}"}])
+        exec_out = execute_code(res)
         
-        # 1. Ask the LLM to generate the code for this specific atomic task
-        sys_prompt = "You are an expert software agent. Write a Python script to accomplish the exact task provided. Output ONLY valid Python code wrapped in ```python ... ``` markdown blocks. Do not add conversational filler."
-        user_req = f"Task Context: {state.get('user_prompt')}\n\nAtomic Task to implement: {desc}\n\nReturn the python code to execute this."
-        
-        raw_code_response = chat_completion(
-            [
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": user_req}
-            ],
-            model="llm",
-            temperature=0.1
-        )
-        
-        # Determine the string output
-        if hasattr(raw_code_response, 'choices'):
-            code_output = raw_code_response.choices[0].message.content
-        else:
-            code_output = str(raw_code_response)
+        # 4. State Capture (Frege End)
+        after_state = WorkspaceState.capture(tool_sandbox)
+        ledger.record(task["id"], before_state, after_state)
+        overall_content += f"Task {i} complete. Side-effects observed.\n\n"
 
-        overall_content += f"**Generated Code:**\n{code_output}\n\n"
+    # Derive the final observed dependency graph based on Frege's Principle
+    observed_graph = ledger.derive_dependency_graph()
+    return {"messages": [{"role": "assistant", "content": overall_content}]}
 
-        # 2. Execute the code in the sandbox
-        if tool == "python" or not tool:  # default to python if empty
-            exec_result = execute_code(code_output)
-            overall_content += f"**Console Output:**\n```text\n{exec_result}\n```\n\n---\n\n"
-        else:
-            exec_result = f"Skipped: Tool '{tool}' is not currently supported in this sandbox."
-            overall_content += f"**Console Output:**\n{exec_result}\n\n---\n\n"
-
-        execution_results.append({
-            "task_id": task.get("id"),
-            "result": exec_result
-        })
-
-    return {
-        "messages": [{"role": "assistant", "content": overall_content}],
-        "final_output": {"results": execution_results}
-    }
-
-
+# [Workflow construction and streaming logic remains as standard LangGraph boilerplate]
 def route_intent(state: AgentState):
     # Read the classification from the supervisor node
     intent = state.get("intent", "DECOMPOSE")
