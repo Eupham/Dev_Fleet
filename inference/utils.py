@@ -43,7 +43,7 @@ def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
     )
 
 class BaseInference:
-    def start_logic(self, cfg: dict):
+def start_logic(self, cfg: dict):
         model_path = f"/root/models/{cfg['filename']}"
         
         if not os.path.exists(model_path):
@@ -51,9 +51,6 @@ class BaseInference:
             
         print(f"Booting raw llama-server for {cfg.get('repo_id')}...")
         
-        # FIX: Removed DEVNULL. 
-        # Now the llama.cpp server logs will print directly to your Modal terminal!
-        # If it crashes (e.g. Out of Memory), you will immediately see why.
         self.server_process = subprocess.Popen([
             "llama-server",
             "-m", model_path,
@@ -64,17 +61,24 @@ class BaseInference:
         ])
         
         self.client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="sk-local-run")
-                
-        # Pull the timeout from config, defaulting to 300 seconds if not found
-        timeout_secs = cfg.get("timeout", 300)
+        
+        timeout_secs = cfg.get("timeout", 600)
         
         for _ in range(timeout_secs): 
+            # 1. Fail fast if the underlying process crashed (e.g., Out of Memory)
+            if self.server_process.poll() is not None:
+                raise RuntimeError("CRITICAL: llama-server process crashed during startup.")
+                
             try:
-                # Poll the health endpoint
-                if requests.get("http://127.0.0.1:8080/health").status_code == 200:
+                # Poll the health endpoint with a short timeout
+                resp = requests.get("http://127.0.0.1:8080/health", timeout=1)
+                if resp.status_code == 200:
                     break
-            except requests.ConnectionError:
-                time.sleep(1)
+            except (requests.ConnectionError, requests.Timeout):
+                pass
+                
+            # 2. UNCONDITIONALLY sleep for 1 second if we didn't break out
+            time.sleep(1)
         else:
             raise RuntimeError(f"CRITICAL: llama-server failed to start within {timeout_secs} seconds.")
             
