@@ -105,44 +105,83 @@ class BaseInference:
             resp = self.client.chat.completions.create(**kwargs)
             # Return the full response object so caller can inspect tool_calls
             return resp
-        # --- Schema mode (existing) ---
+        # --- Schema mode ---
+        # llama-server's json_schema mode can be finicky with nested Pydantic schemas.
+        # Strategy: try constrained mode first, then fallback to prompt-based JSON.
         if schema:
+            pydantic_schema = schema.model_json_schema()
+            # llama-server expects json_schema.name + json_schema.schema
             kwargs["response_format"] = {
                 "type": "json_schema",
-                "json_schema": {"schema": schema.model_json_schema()}
+                "json_schema": {
+                    "name": schema.__name__,
+                    "schema": pydantic_schema,
+                    "strict": False,  # Allow some flexibility
+                }
             }
-        resp = self.client.chat.completions.create(**kwargs)
-        content = resp.choices[0].message.content
-        if schema:
+            try:
+                resp = self.client.chat.completions.create(**kwargs)
+                content = resp.choices[0].message.content
+            except Exception as e:
+                logger.warning(f"Schema-constrained request failed: {e} — retrying with prompt-based JSON")
+                content = None
+
+            # If constrained mode returned empty, fallback to prompt-based JSON
             if not content or content.strip() == "":
-                logger.warning(f"LLM returned empty content for schema {schema.__name__}")
+                logger.warning(f"LLM returned empty content for schema {schema.__name__} — trying prompt-based fallback")
+                # Remove response_format and inject schema into system message
+                fallback_kwargs = {k: v for k, v in kwargs.items() if k != "response_format"}
+                schema_hint = json.dumps(pydantic_schema, indent=2)
+                # Prepend schema instruction to the last user message
+                fallback_msgs = list(fallback_kwargs["messages"])
+                fallback_msgs.append({
+                    "role": "user",
+                    "content": f"Respond ONLY with valid JSON matching this schema:\n```json\n{schema_hint}\n```\nNo other text."
+                })
+                fallback_kwargs["messages"] = fallback_msgs
+                try:
+                    resp = self.client.chat.completions.create(**fallback_kwargs)
+                    content = resp.choices[0].message.content
+                except Exception as e2:
+                    logger.error(f"Prompt-based fallback also failed: {e2}")
+                    return None
+
+            if not content or content.strip() == "":
+                logger.warning(f"Both schema modes returned empty for {schema.__name__}")
                 return None
+
             logger.info(f"Schema response (first 200 chars): {content[:200]}")
+            # Try direct parse
             try:
                 parsed = schema.model_validate_json(content)
                 logger.info(f"Successfully parsed {schema.__name__}")
                 return parsed
             except Exception as e:
-                logger.warning(f"Schema validation failed for {schema.__name__}: {e}")
-                logger.warning(f"Raw content: {content[:1000]}")
+                logger.warning(f"Direct JSON parse failed for {schema.__name__}: {e}")
+                # Try extracting from code block
                 import re
                 json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
                 if json_match:
                     try:
                         parsed = schema.model_validate_json(json_match.group(1))
-                        logger.info(f"Successfully parsed {schema.__name__} from code block")
+                        logger.info(f"Parsed {schema.__name__} from code block")
                         return parsed
-                    except Exception as e2:
-                        logger.warning(f"Code block parsing also failed: {e2}")
-                json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
+                    except Exception:
+                        pass
+                # Try extracting any JSON object
+                json_match = re.search(r'\{[\s\S]*\}', content)
                 if json_match:
                     try:
                         parsed = schema.model_validate_json(json_match.group(0))
-                        logger.info(f"Successfully parsed {schema.__name__} from extracted JSON")
+                        logger.info(f"Parsed {schema.__name__} from extracted JSON")
                         return parsed
-                    except Exception as e3:
-                        logger.warning(f"JSON extraction also failed: {e3}")
+                    except Exception:
+                        pass
+                logger.warning(f"All parsing attempts failed for {schema.__name__}")
                 return None
+
+        resp = self.client.chat.completions.create(**kwargs)
+        content = resp.choices[0].message.content
         return content
     def __del__(self):
         if hasattr(self, 'server_process'):
