@@ -51,7 +51,7 @@ class BaseInference:
                 
             print(f"Booting raw llama-server for {cfg.get('repo_id')}...")
             
-self.server_process = subprocess.Popen([
+            self.server_process = subprocess.Popen([
                 "llama-server",
                 "-m", model_path,
                 "-c", str(cfg["n_ctx"]),
