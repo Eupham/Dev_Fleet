@@ -23,13 +23,16 @@ class _TaskBase(BaseModel):
     execution_cost: Literal["trivial", "moderate", "expensive"] = "moderate"
 
 class QueryTask(_TaskBase):
+    """Linguistic Patient: The resource to be read."""
     task_type: Literal["query"] = "query"
     target_resource: str = ""
 
 class TransformTask(_TaskBase):
+    """Linguistic Theme: The state to be changed."""
     task_type: Literal["transform"] = "transform"
 
 class VerifyTask(_TaskBase):
+    """Linguistic Assertion: The condition to be checked."""
     task_type: Literal["verify"] = "verify"
     assertion: str = ""
 
@@ -58,7 +61,7 @@ class FlatMontagueParse(BaseModel):
     )
 
 class MontagueDecomposition(BaseModel):
-    """The root schema passed to the LLM."""
+    """The root schema passed to the LLM for translation."""
     intent_observation: str = Field(default="Translating request to formal logic.")
     parses: list[FlatMontagueParse] = Field(..., description="Sequential list of actions.")
 
@@ -67,6 +70,7 @@ def map_to_fillmore_frames(parses: list[FlatMontagueParse]) -> list[AtomicTaskNo
     frames = []
     prev_id = None
     for p in parses:
+        # Frame Selection Logic based on the Montague Verb
         if p.action_verb in ("create", "modify", "research"):
             frame = TransformTask(
                 id=uuid.uuid4().hex[:8],
@@ -88,7 +92,8 @@ def map_to_fillmore_frames(parses: list[FlatMontagueParse]) -> list[AtomicTaskNo
         else:
             frame = TransformTask(id=uuid.uuid4().hex[:8], description=p.goal_instruction)
 
-        if prev_id: # Chain sequentially
+        # DAG Construction: Deterministic Sequential Topology
+        if prev_id:
             frame.preconditions = [prev_id]
         frames.append(frame)
         prev_id = frame.id
@@ -96,7 +101,12 @@ def map_to_fillmore_frames(parses: list[FlatMontagueParse]) -> list[AtomicTaskNo
 
 # --- 3. PIPELINE ---
 
-def parse_prompt(user_prompt: str, model: str = "llm", codebase_context: str = "", is_research: bool = False) -> TaskDAG:
+def parse_prompt(
+    user_prompt: str,
+    model: str = "llm",
+    codebase_context: str = "",
+    is_research: bool = False
+) -> TaskDAG:
     from orchestrator.llm_client import chat_completion
     import logging
     logger = logging.getLogger("dev_fleet.task_parser")
@@ -107,6 +117,7 @@ def parse_prompt(user_prompt: str, model: str = "llm", codebase_context: str = "
     ]
 
     try:
+        # 1. LLM performs Montague Translation (Flat Schema)
         raw_response = chat_completion(messages, model=model, schema=MontagueDecomposition)
         
         if isinstance(raw_response, MontagueDecomposition):
@@ -114,8 +125,9 @@ def parse_prompt(user_prompt: str, model: str = "llm", codebase_context: str = "
         elif isinstance(raw_response, dict):
             parsed = MontagueDecomposition.model_validate(raw_response)
         else:
-            raise ValueError("Unexpected response type")
+            raise ValueError("Unexpected response type from LLM")
 
+        # 2. Python instantiates Fillmore Frames and builds the DAG
         typed_tasks = map_to_fillmore_frames(parsed.parses)
         return TaskDAG(user_prompt=user_prompt, intent_observation=parsed.intent_observation, tasks=typed_tasks)
 
