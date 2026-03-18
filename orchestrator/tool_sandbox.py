@@ -176,22 +176,9 @@ def dispatch_tool(name: str, arguments: dict) -> str:
     try:
         if name == "web_search":
             query = arguments.get("query", "")
-            # Use the current package name 'ddgs' (duckduckgo_search was renamed).
-            # Fall back to installing it inline if missing, then import via the
-            # new API to guarantee actual results are returned.
+            # ddgs is pre-installed in the container image — no runtime install needed.
             code = f"""
-import subprocess, sys
-
-# Install current package name if neither import name is present.
-try:
-    from ddgs import DDGS
-except ImportError:
-    try:
-        from duckduckgo_search import DDGS
-    except ImportError:
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "ddgs"], capture_output=True)
-        from ddgs import DDGS
-
+from ddgs import DDGS
 results = []
 try:
     with DDGS() as ddgs:
@@ -208,7 +195,7 @@ if results:
 else:
     print("No results found for: {repr(query)}")
 """
-            result = forward(code=code, language="python", timeout=45)
+            result = forward(code=code, language="python", timeout=30)
             output = result.get("stdout", "").strip()
             return output if output else f"No search results for: {query}"
 
