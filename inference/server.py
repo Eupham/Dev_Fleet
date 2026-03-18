@@ -9,6 +9,7 @@ _cfg = get_tier_config("moderate")
     gpu=_cfg.get("gpu", "L40S"),
     scaledown_window=_cfg.get("scaledown_window", 2),
     timeout=_cfg.get("timeout", 1800),
+    mounts=[modal.Mount.from_local_python_packages("orchestrator")], # <-- Add this line
 )
 class Inference(BaseInference):
     @modal.enter()
