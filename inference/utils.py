@@ -64,8 +64,11 @@ class BaseInference:
         ])
         
         self.client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="sk-local-run")
+                
+        # Pull the timeout from config, defaulting to 300 seconds if not found
+        timeout_secs = cfg.get("timeout", 300)
         
-        for _ in range(60): 
+        for _ in range(timeout_secs): 
             try:
                 # Poll the health endpoint
                 if requests.get("http://127.0.0.1:8080/health").status_code == 200:
@@ -73,7 +76,7 @@ class BaseInference:
             except requests.ConnectionError:
                 time.sleep(1)
         else:
-            raise RuntimeError("CRITICAL: llama-server failed to start within 60 seconds.")
+            raise RuntimeError(f"CRITICAL: llama-server failed to start within {timeout_secs} seconds.")
             
         print("Server is online and ready!")
 
