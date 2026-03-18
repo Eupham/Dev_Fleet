@@ -193,22 +193,16 @@ class TriGraphMemory:
             )
         return self.property_graph
 
-    @classmethod
+@classmethod
     def configure(cls) -> None:
-        """Pre-configure LlamaIndex global settings before instantiation.
-
-        Must be called before :meth:`load` in contexts where LlamaIndex has not
-        yet been initialised, to avoid the lazy-getter bootstrap that tries to
-        reach OpenAI when no ``OPENAI_API_KEY`` is present. The only safe
-        operation is a blind write.
-        """
+        """Pre-configure LlamaIndex global settings before instantiation."""
         from llama_index.core import Settings as LISettings
-        from orchestrator.llm_client import ModalVLLM
+        from orchestrator.llm_client import DevFleetLLM # <-- Changed from ModalVLLM
+        
         LISettings.embed_model = ModalEmbeddings()
-        LISettings.llm = ModalVLLM()
+        LISettings.llm = DevFleetLLM() # <-- Changed from ModalVLLM
         # Force batched processing to drastically reduce Modal RPC network latency
         LISettings.embed_batch_size = 128
-
     @classmethod
     def load(cls) -> "TriGraphMemory":
         """Restore graphs from disk, or return the in-memory singleton when the
