@@ -1,9 +1,13 @@
 import modal
-import toml
 import os
 
 def get_tier_config(tier: str) -> dict:
-    """Loads the specific model configuration from config.toml."""
+    """
+    Loads the specific model configuration from config.toml.
+    Uses a late import to prevent ModuleNotFoundError during container startup.
+    """
+    import toml # <--- Moved inside to ensure it's only called at runtime
+    
     with open("inference/config.toml", "r") as f:
         config = toml.load(f)
     tier_cfg = config[tier]
@@ -13,7 +17,7 @@ def get_tier_config(tier: str) -> dict:
 def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
     """
     Compiles engine image and downloads weights.
-    Uses the wrapper's native submodule to avoid 'undefined symbol' crashes.
+    Includes 'toml' in the pip_install to satisfy the runtime dependency.
     """
     download_url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
     
@@ -22,19 +26,11 @@ def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
         .apt_install("build-essential", "clang", "cmake", "git", "curl", "ninja-build")
         .run_commands("ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1")
         .env({"HF_HOME": "/vol/cache"}) 
-        .pip_install("huggingface_hub", "langgraph>=1.1.2", "mcp>=1.26.0")
+        # Added 'toml' here to ensure the image contains the package
+        .pip_install("huggingface_hub", "langgraph>=1.1.2", "mcp>=1.26.0", "toml")
         .run_commands([
-            # 1. Clone the wrapper WITH its submodules. 
-            # We trust the maintainer's pinned commit for the C++ engine.
             "git clone --depth 1 --recurse-submodules https://github.com/abetlen/llama-cpp-python.git /tmp/llama-cpp-python",
-            
-            # 2. FIX: We REMOVED the manual 'git checkout master' for llama.cpp.
-            # This ensures the C++ symbols match the Python ctypes definitions.
-            
-            # 3. Keep the 'sed' fix for the broken MTMD tool just in case it's in this version too.
-            "find /tmp/llama-cpp-python -name 'CMakeLists.txt' -exec sed -i '/mtmd/d' {} +",
-            
-            # 4. Compile with CUDA support
+            "cd /tmp/llama-cpp-python && find . -name 'CMakeLists.txt' -exec sed -i '/mtmd/d' {} +",
             "export LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs && "
             "cd /tmp/llama-cpp-python && "
             "CMAKE_ARGS='-DGGML_CUDA=on -G Ninja -DLLAMA_BUILD_TOOLS=OFF' pip install ."
@@ -48,11 +44,13 @@ def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
     )
 
 class BaseInference:
+    """Logic shared by all inference tiers."""
+    
     def start_logic(self, cfg: dict):
+        # Late import for the C++ bindings we just compiled
         from llama_cpp import Llama
-        model_path = f"/root/models/{cfg['filename']}"
         
-        # Diagnostic check
+        model_path = f"/root/models/{cfg['filename']}"
         if not os.path.exists(model_path):
             raise RuntimeError(f"CRITICAL: File NOT found at {model_path}.")
             
@@ -69,8 +67,10 @@ class BaseInference:
         kwargs = {"messages": messages, "temperature": temperature, "max_tokens": max_tokens}
         if schema:
             kwargs["response_format"] = {"type": "json_schema", "json_schema": {"schema": schema.model_json_schema()}}
+        
         resp = self.llm.create_chat_completion(**kwargs)
         content = resp["choices"][0]["message"]["content"]
+        
         if schema:
             try: return schema.model_validate_json(content or "{}")
             except: return schema.model_construct()
