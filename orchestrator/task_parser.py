@@ -3,12 +3,10 @@ from __future__ import annotations
 import uuid
 import logging
 from typing import Annotated, Literal, Union, List
-
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("dev_fleet.task_parser")
 
-# --- 1. FILLMORE FRAMES (Execution Schemas - Python Side Only) ---
 class _TaskBase(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:8])
     description: str
@@ -25,34 +23,28 @@ class TaskDAG(BaseModel):
     user_prompt: str = ""
     tasks: List[AtomicTaskNode]
 
-# --- 2. MONTAGUE TRANSLATION LAYER (LLM Side Only) ---
-# For llama-server GBNF compatibility, we must keep this as simple as possible.
-
 class MontagueAction(BaseModel):
-    """A single logical step."""
-    # Using simple strings instead of Literals to reduce GBNF branch complexity
     verb: str = Field(description="Must be exactly: create, modify, read, verify, or research")
     target: str = Field(description="The file path or URL.")
     instruction: str = Field(description="What needs to be done.")
 
 class MontagueDecomposition(BaseModel):
-    """
-    CRITICAL GBNF FIX: 
-    1. No intent_observation field. It creates an early exit point.
-    2. 'parses' is the only field, forcing the grammar to open the array immediately.
-    """
     parses: List[MontagueAction] = Field(..., description="List of actions to perform.")
 
-# Strict Prompt to assist the GBNF
+# <--- CRITICAL FIX: ONE-SHOT EXAMPLE ADDED --->
 MONTAGUE_SYSTEM = """You are a logical parser. Translate the request into a JSON list of actions.
 Valid verbs: create, modify, read, verify, research.
 
-Output EXACTLY this JSON structure:
+Example Input: "Do online research about quantum computing and write a script."
+Example Output:
 {
   "parses": [
-    {"verb": "create", "target": "main.py", "instruction": "Write code"}
+    {"verb": "research", "target": "quantum computing", "instruction": "Research quantum computing principles"},
+    {"verb": "create", "target": "quantum_script.py", "instruction": "Write a python script based on research"}
   ]
-}"""
+}
+
+Respond ONLY with valid JSON matching the exact structure above."""
 
 def parse_prompt(user_prompt: str, model: str = "llm", codebase_context: str = "") -> TaskDAG:
     from orchestrator.llm_client import chat_completion
@@ -63,10 +55,8 @@ def parse_prompt(user_prompt: str, model: str = "llm", codebase_context: str = "
     ]
 
     try:
-        # Calls orchestrator/llm_client.py -> Modal RPC -> inference/server.py -> llama-server
         raw_response = chat_completion(messages, model=model, schema=MontagueDecomposition)
         
-        # Safe RPC Unpacking
         if hasattr(raw_response, 'parses'):
             parsed_actions = raw_response.parses
         elif isinstance(raw_response, dict):
@@ -77,7 +67,6 @@ def parse_prompt(user_prompt: str, model: str = "llm", codebase_context: str = "
         tasks = []
         prev_id = None
         for p in parsed_actions:
-            # Map strings back to typed Frames
             v = p.verb.lower()
             if v in ("create", "modify", "research"):
                 task = TransformTask(description=p.instruction, tool_hint="bash" if v == "research" else "python")
@@ -89,6 +78,10 @@ def parse_prompt(user_prompt: str, model: str = "llm", codebase_context: str = "
             if prev_id: task.preconditions = [prev_id]
             tasks.append(task)
             prev_id = task.id
+            
+        # Ensure we don't return an empty DAG
+        if not tasks:
+            raise ValueError("No tasks were parsed from the LLM output.")
             
         return TaskDAG(user_prompt=user_prompt, tasks=tasks)
         
