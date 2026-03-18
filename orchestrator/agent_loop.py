@@ -1,4 +1,5 @@
 import operator
+import os
 from typing import Annotated, List, TypedDict
 from langgraph.graph import StateGraph, END
 import networkx as nx
@@ -7,9 +8,14 @@ from orchestrator.tool_sandbox import execute_code
 from orchestrator.task_parser import parse_prompt
 from orchestrator.composition import WorkspaceState, CompositionLedger
 from orchestrator.discourse import DRS
-from orchestrator.llm_client import chat_completion, ping_tier
+from orchestrator.llm_client import chat_completion, ModalKeepAlive
 from orchestrator.graph_memory import TriGraphMemory
 from orchestrator.difficulty import compute_base_difficulty, difficulty_to_tier
+
+# --- Ingestion Imports ---
+from orchestrator.extractor import Extractor
+from orchestrator.indexer import Indexer
+from orchestrator.codebase_rag import RAGQueryEngine
 
 class AgentState(TypedDict, total=False):
     messages: Annotated[List[dict], operator.add]
@@ -30,6 +36,33 @@ def decompose_and_evaluate(state: AgentState):
         "messages": [{"role": "assistant", "content": f"Planned {len(dag.tasks)} formal frames."}]
     }
 
+def ingest_delta_to_graph(delta, workspace_path="/workspace"):
+    """THEORETICAL FIX: Epistemic Update Phase.
+    Parses newly created/modified files and updates the Tri-Graph."""
+    mem = TriGraphMemory.load()
+    extractor = Extractor()
+    indexer = Indexer(mem)
+    
+    files_to_process = set(delta.created) | set(delta.modified)
+    
+    if not files_to_process:
+        return
+        
+    print(f"   🧠 [Epistemic Update] Ingesting {len(files_to_process)} new artifacts into Knowledge Graph...")
+    for file_path in files_to_process:
+        full_path = os.path.join(workspace_path, file_path.lstrip('/'))
+        if os.path.exists(full_path):
+            try:
+                with open(full_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                # Extract AST/Symbols and index into semantic graph
+                symbols = extractor.extract(content, file_path)
+                indexer.index_symbols(symbols, file_path)
+            except Exception as e:
+                print(f"      ⚠️ Failed to ingest {file_path}: {e}")
+                
+    mem.save()
+
 def execute_single_task(state: AgentState):
     from orchestrator import tool_sandbox 
     
@@ -42,28 +75,39 @@ def execute_single_task(state: AgentState):
     if state.get("ledger"):
         ledger.events = state["ledger"].get("events", [])
     
-    # 1. EMIT HEARTBEAT
-    ping_tier("moderate") 
+    # 1. HOLD INFRASTRUCTURE WARM
+    # The context manager continuously pings Modal while we calculate
+    with ModalKeepAlive(tier="moderate"):
+        
+        # 2. THEORETICAL ASSESSMENT (Kolmogorov & RAG)
+        mem = TriGraphMemory.load()
+        rag_engine = RAGQueryEngine(mem)
+        
+        # Pull epistemic context from the updated RAG graph
+        context_nodes = rag_engine.query(task.get("description", ""))
+        
+        difficulty_score = compute_base_difficulty(
+            task_id=task.get("id", ""),
+            task_description=task.get("description", ""), 
+            reranker_edges=context_nodes, # Feeds RAG success into difficulty
+            composition_graph=nx.DiGraph(), 
+            target_code=""
+        )
+        assigned_tier = difficulty_to_tier(difficulty_score)
+        print(f"   🧭 Routing Task {idx+1}/{len(tasks)} to Tier: [{assigned_tier.upper()}] (Score: {difficulty_score:.2f})")
 
-    # 2. THEORETICAL ASSESSMENT
-    mem = TriGraphMemory.load()
+        # 3. DRT Resolution & Frege Start
+        desc = drs.augment_description(task.get("description", ""))
+        
+        # Inject the retrieved RAG context directly into the LLM prompt
+        rag_context_str = "\n".join([n.text for n in context_nodes[:3]]) if context_nodes else "No prior knowledge."
+        prompt = f"Implement this task.\n\nDiscourse Context:\n{desc}\n\nRetrieved Knowledge:\n{rag_context_str}"
+
+    # --- Container lock released, safe to make the real generation call ---
     
-    difficulty_score = compute_base_difficulty(
-        task_id=task.get("id", ""),
-        task_description=task.get("description", ""), # <--- CRITICAL FIX: Added missing argument
-        reranker_edges=[], 
-        composition_graph=nx.DiGraph(), 
-        target_code=""
-    )
-    assigned_tier = difficulty_to_tier(difficulty_score)
-    print(f"   🧭 Routing Task {idx+1}/{len(tasks)} to Tier: [{assigned_tier.upper()}] (Score: {difficulty_score:.2f})")
-
-    # 3. DRT Resolution & Frege Start
-    desc = drs.augment_description(task.get("description", ""))
     before_state = WorkspaceState.capture(tool_sandbox)
-
+    
     # 4. EXECUTION
-    prompt = f"Implement this task. Discourse Context:\n{desc}"
     res = chat_completion([{"role": "user", "content": prompt}], tier=assigned_tier)
     code_text = res.choices[0].message.content if hasattr(res, 'choices') else str(res)
     exec_out = execute_code(code_text)
@@ -73,6 +117,9 @@ def execute_single_task(state: AgentState):
     delta = after_state.diff(before_state)
     ledger.record(task.get("id"), before_state, after_state)
     drs.introduce_from_delta(task.get("id"), delta) 
+    
+    # 6. EPISTEMIC UPDATE (Ingest new research/code)
+    ingest_delta_to_graph(delta)
     
     msg = f"#### Task {idx+1} ({assigned_tier})\n**Result:**\n{exec_out}\n\n"
     
