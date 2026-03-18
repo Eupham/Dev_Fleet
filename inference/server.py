@@ -5,11 +5,11 @@ from inference.utils import get_tier_config, build_llama_image, BaseInference
 _cfg = get_tier_config("moderate")
 
 @app.cls(
-    image=build_llama_image(**_cfg),
+    # Add the local source directly to the image
+    image=build_llama_image(**_cfg).add_local_python_source("orchestrator"),
     gpu=_cfg.get("gpu", "L40S"),
     scaledown_window=_cfg.get("scaledown_window", 2),
     timeout=_cfg.get("timeout", 1800),
-    mounts=[modal.Mount.from_local_python_packages("orchestrator")], # <-- Add this line
 )
 class Inference(BaseInference):
     @modal.enter()
