@@ -86,26 +86,65 @@ class BaseInference:
             print("Server is online and ready!")
 
     def generate_logic(self, messages, temperature=0.3, max_tokens=4096, schema=None):
+        import logging
+        import json
+        logger = logging.getLogger("dev_fleet.inference")
+
         kwargs = {
-            "model": "local-model", 
+            "model": "local-model",
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens
         }
-        
+
         if schema:
+            # Try JSON schema mode first
             kwargs["response_format"] = {
-                "type": "json_schema", 
+                "type": "json_schema",
                 "json_schema": {"schema": schema.model_json_schema()}
             }
-            
+
         resp = self.client.chat.completions.create(**kwargs)
         content = resp.choices[0].message.content
-        
+
         if schema:
-            try: return schema.model_validate_json(content or "{}")
-            except: return schema.model_construct()
-            
+            if not content or content.strip() == "":
+                logger.warning(f"LLM returned empty content for schema {schema.__name__}")
+                return None
+
+            logger.info(f"Schema response (first 200 chars): {content[:200]}")
+
+            try:
+                parsed = schema.model_validate_json(content)
+                logger.info(f"Successfully parsed {schema.__name__}")
+                return parsed
+            except Exception as e:
+                logger.warning(f"Schema validation failed for {schema.__name__}: {e}")
+                logger.warning(f"Raw content: {content[:1000]}")
+
+                # Fallback: try to extract JSON from markdown code blocks
+                import re
+                json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
+                if json_match:
+                    try:
+                        parsed = schema.model_validate_json(json_match.group(1))
+                        logger.info(f"Successfully parsed {schema.__name__} from code block")
+                        return parsed
+                    except Exception as e2:
+                        logger.warning(f"Code block parsing also failed: {e2}")
+
+                # Final fallback: try to find any JSON object in the content
+                json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
+                if json_match:
+                    try:
+                        parsed = schema.model_validate_json(json_match.group(0))
+                        logger.info(f"Successfully parsed {schema.__name__} from extracted JSON")
+                        return parsed
+                    except Exception as e3:
+                        logger.warning(f"JSON extraction also failed: {e3}")
+
+                return None
+
         return content
 
     def __del__(self):

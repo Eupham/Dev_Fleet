@@ -48,7 +48,7 @@ Respond ONLY with valid JSON matching the exact structure above."""
 
 def parse_prompt(user_prompt: str, model: str = "llm", codebase_context: str = "") -> TaskDAG:
     from orchestrator.llm_client import chat_completion
-    
+
     messages = [
         {"role": "system", "content": MONTAGUE_SYSTEM},
         {"role": "user", "content": f"Context:\n{codebase_context}\n\nRequest: {user_prompt}"}
@@ -56,35 +56,52 @@ def parse_prompt(user_prompt: str, model: str = "llm", codebase_context: str = "
 
     try:
         raw_response = chat_completion(messages, model=model, schema=MontagueDecomposition)
-        
+
+        # HONEST ASSESSMENT: Handle None return (validation failed)
+        if raw_response is None:
+            raise ValueError("Schema validation returned None — LLM output did not match expected schema")
+
+        # Extract parsed actions from the response
         if hasattr(raw_response, 'parses'):
             parsed_actions = raw_response.parses
         elif isinstance(raw_response, dict):
             parsed_actions = raw_response.get("parses", [])
         else:
-             raise ValueError(f"RPC returned invalid shape: {raw_response}")
+            raise ValueError(f"RPC returned unexpected type: {type(raw_response)}")
+
+        # HONEST ASSESSMENT: Empty parses list means decomposition failed
+        if not parsed_actions:
+            raise ValueError("LLM returned empty parses list")
 
         tasks = []
         prev_id = None
         for p in parsed_actions:
-            v = p.verb.lower()
-            if v in ("create", "modify", "research"):
-                task = TransformTask(description=p.instruction, tool_hint="bash" if v == "research" else "python")
-            elif v == "read":
-                task = QueryTask(description=p.instruction, target_resource=p.target)
-            else:
-                task = VerifyTask(description=p.instruction, assertion=p.target)
+            v = p.verb.lower() if hasattr(p, 'verb') else p.get('verb', '').lower()
+            instruction = p.instruction if hasattr(p, 'instruction') else p.get('instruction', user_prompt)
+            target = p.target if hasattr(p, 'target') else p.get('target', '')
 
-            if prev_id: task.preconditions = [prev_id]
+            if v in ("create", "modify", "research"):
+                task = TransformTask(description=instruction, tool_hint="bash" if v == "research" else "python")
+            elif v == "read":
+                task = QueryTask(description=instruction)
+            else:
+                task = VerifyTask(description=instruction)
+
+            if prev_id:
+                task.preconditions = [prev_id]
             tasks.append(task)
             prev_id = task.id
-            
-        # Ensure we don't return an empty DAG
+
+        # Final sanity check
         if not tasks:
-            raise ValueError("No tasks were parsed from the LLM output.")
-            
+            raise ValueError("No tasks were created from parsed actions")
+
         return TaskDAG(user_prompt=user_prompt, tasks=tasks)
-        
+
     except Exception as exc:
-        logger.warning(f"Montague decomposition failed: {exc} — falling back.")
-        return TaskDAG(user_prompt=user_prompt, tasks=[TransformTask(description=user_prompt)])
+        logger.warning(f"Montague decomposition failed: {exc} — using single-task fallback")
+        # HONEST FALLBACK: Single transform task that captures the full user intent
+        return TaskDAG(
+            user_prompt=user_prompt,
+            tasks=[TransformTask(description=user_prompt, tool_hint="python")]
+        )
