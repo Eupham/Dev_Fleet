@@ -44,18 +44,20 @@ orchestrator_image = (
         "scipy<1.16.0",
         "networkx>=3.2",
         "pydantic>=2.5",
+        "pathspec>=0.12.1",             # <--- CRITICAL FIX: Added pathspec
+        "orjson>=3.11.7",               # <--- Added for fast serialization
         "llama-index-core>=0.10.0",
         "llama-index>=0.10.0",
         "llama-index-embeddings-huggingface>=0.1.0",
         "langgraph>=1.1.2",
         "mcp>=1.26.0",
-        "radon>=6.0",                   # cyclomatic complexity signal
-        "tree-sitter>=0.25.2",            # non-Python code extraction
-        "tree-sitter-javascript>=0.23", # JS/TS grammar
-        "markdown-it-py>=3.0",          # structured prose extraction
-        "beautifulsoup4>=4.12",         # HTML stripping for web content
-        "trafilatura>=2.0.0",            # HTML/web extraction
-        "pymupdf>=1.27.2",                # PDF extraction
+        "radon>=6.0",                   
+        "tree-sitter>=0.25.2",            
+        "tree-sitter-javascript>=0.23", 
+        "markdown-it-py>=3.0",          
+        "beautifulsoup4>=4.12",         
+        "trafilatura>=2.0.0",            
+        "pymupdf>=1.27.2",                
     )
 )
 
