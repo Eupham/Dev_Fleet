@@ -20,14 +20,14 @@ class AgentState(TypedDict, total=False):
 def decompose_and_evaluate(state: AgentState):
     print(f"🤖 [Jules] Decomposing prompt into tasks (Iteration {state.get('iteration', 0)})...")
     
-    # 1. Parse the prompt into a structured TaskDAG using the LLM
     dag = parse_prompt(state["user_prompt"])
     
-    # 2. Evaluate difficulty PER TASK instead of the original prompt length
     max_score = 0.0
-    print(f"🧩 [Task Parser] Created {len(dag.tasks)} tasks:")
-    for task in dag.tasks:
-        # Score the individual task description
+    # UPDATE THIS LINE: Change .tasks to whatever your schema uses (e.g., .nodes)
+    print(f"🧩 [Task Parser] Created {len(dag.nodes)} tasks:") 
+    
+    # UPDATE THIS LINE TOO:
+    for task in dag.nodes: 
         score = compression_ratio(task.description)
         max_score = max(max_score, score)
         tier_string = difficulty_to_tier(score)
@@ -37,8 +37,10 @@ def decompose_and_evaluate(state: AgentState):
     print(f"🧭 [Router] Overall DAG Execution Tier: '{overall_tier}'")
     
     # Format a response for Chainlit UI
-    response_text = f"Decomposed request into {len(dag.tasks)} tasks. Maximum required execution tier: '{overall_tier}'.\n\n"
-    for i, t in enumerate(dag.tasks, 1):
+    response_text = f"Decomposed request into {len(dag.nodes)} tasks. Maximum required execution tier: '{overall_tier}'.\n\n"
+    
+    # UPDATE THIS LINE TOO:
+    for i, t in enumerate(dag.nodes, 1): 
         response_text += f"{i}. **{t.task_type.upper()}**: {t.description}\n"
         
     return {
