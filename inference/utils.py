@@ -43,46 +43,46 @@ def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
     )
 
 class BaseInference:
-def start_logic(self, cfg: dict):
-        model_path = f"/root/models/{cfg['filename']}"
-        
-        if not os.path.exists(model_path):
-            raise RuntimeError(f"CRITICAL: File NOT found at {model_path}.")
+    def start_logic(self, cfg: dict):
+            model_path = f"/root/models/{cfg['filename']}"
             
-        print(f"Booting raw llama-server for {cfg.get('repo_id')}...")
-        
-        self.server_process = subprocess.Popen([
-            "llama-server",
-            "-m", model_path,
-            "-c", str(cfg["n_ctx"]),
-            "-ngl", "99",          # Offload all layers to GPU
-            "--host", "127.0.0.1",
-            "--port", "8080"
-        ])
-        
-        self.client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="sk-local-run")
-        
-        timeout_secs = cfg.get("timeout", 600)
-        
-        for _ in range(timeout_secs): 
-            # 1. Fail fast if the underlying process crashed (e.g., Out of Memory)
-            if self.server_process.poll() is not None:
-                raise RuntimeError("CRITICAL: llama-server process crashed during startup.")
+            if not os.path.exists(model_path):
+                raise RuntimeError(f"CRITICAL: File NOT found at {model_path}.")
                 
-            try:
-                # Poll the health endpoint with a short timeout
-                resp = requests.get("http://127.0.0.1:8080/health", timeout=1)
-                if resp.status_code == 200:
-                    break
-            except (requests.ConnectionError, requests.Timeout):
-                pass
-                
-            # 2. UNCONDITIONALLY sleep for 1 second if we didn't break out
-            time.sleep(1)
-        else:
-            raise RuntimeError(f"CRITICAL: llama-server failed to start within {timeout_secs} seconds.")
+            print(f"Booting raw llama-server for {cfg.get('repo_id')}...")
             
-        print("Server is online and ready!")
+            self.server_process = subprocess.Popen([
+                "llama-server",
+                "-m", model_path,
+                "-c", str(cfg["n_ctx"]),
+                "-ngl", "99",          # Offload all layers to GPU
+                "--host", "127.0.0.1",
+                "--port", "8080"
+            ])
+            
+            self.client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="sk-local-run")
+            
+            timeout_secs = cfg.get("timeout", 600)
+            
+            for _ in range(timeout_secs): 
+                # 1. Fail fast if the underlying process crashed (e.g., Out of Memory)
+                if self.server_process.poll() is not None:
+                    raise RuntimeError("CRITICAL: llama-server process crashed during startup.")
+                    
+                try:
+                    # Poll the health endpoint with a short timeout
+                    resp = requests.get("http://127.0.0.1:8080/health", timeout=1)
+                    if resp.status_code == 200:
+                        break
+                except (requests.ConnectionError, requests.Timeout):
+                    pass
+                    
+                # 2. UNCONDITIONALLY sleep for 1 second if we didn't break out
+                time.sleep(1)
+            else:
+                raise RuntimeError(f"CRITICAL: llama-server failed to start within {timeout_secs} seconds.")
+                
+            print("Server is online and ready!")
 
     def generate_logic(self, messages, temperature=0.3, max_tokens=4096, schema=None):
         kwargs = {
