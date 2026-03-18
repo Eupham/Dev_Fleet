@@ -25,16 +25,22 @@ def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
         modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.12")
         .apt_install("build-essential", "clang", "cmake", "git", "curl", "ninja-build")
         .run_commands("ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1")
-        .env({"HF_HOME": "/vol/cache"}) 
-        # Added 'toml' here to ensure the image contains the package
-        .pip_install("huggingface_hub", "langgraph>=1.1.2", "mcp>=1.26.0", "toml")
+        
+        # --- 1. HEAVY COMPILE LAYER (Moved UP so it stays permanently cached) ---
         .run_commands([
             "git clone --depth 1 --recurse-submodules https://github.com/abetlen/llama-cpp-python.git /tmp/llama-cpp-python",
             "cd /tmp/llama-cpp-python && find . -name 'CMakeLists.txt' -exec sed -i '/mtmd/d' {} +",
             "export LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs && "
             "cd /tmp/llama-cpp-python && "
-            "CMAKE_ARGS='-DGGML_CUDA=on -G Ninja -DLLAMA_BUILD_TOOLS=OFF' pip install ."
+            # Added '-v' so the build outputs logs, preventing the Modal heartbeat timeout
+            "CMAKE_ARGS='-DGGML_CUDA=on -G Ninja -DLLAMA_BUILD_TOOLS=OFF' pip install -v ."
         ])
+        
+        # --- 2. FAST PIP LAYER (Changes here will no longer trigger recompilation) ---
+        .env({"HF_HOME": "/vol/cache"}) 
+        .pip_install("huggingface_hub", "langgraph>=1.1.2", "mcp>=1.26.0", "toml")
+        
+        # --- 3. APP CODE & WEIGHTS ---
         .add_local_python_source("fleet_app", copy=True)
         .add_local_file("inference/config.toml", remote_path="/root/inference/config.toml", copy=True)
         .run_commands([
