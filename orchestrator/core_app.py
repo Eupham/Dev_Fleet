@@ -63,7 +63,7 @@ orchestrator_image = (
         "ddgs>=6.3.7",           # web_search tool — baked in so no runtime install
         "playwright>=1.49.1",
     )
-    .run_commands("playwright install --with-deps chromium")
+    .run_commands("NODE_OPTIONS='--no-deprecation' playwright install --with-deps chromium")
 )
 
 # ---------------------------------------------------------------------------
