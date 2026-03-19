@@ -58,6 +58,8 @@ try:
 
     def _safe_label(text: str, max_len: int = 60) -> str:
         text = str(text)
+        # Fix mermaid syntax error for line breaks and special characters
+        text = text.replace('\n', ' ').replace('\r', '').replace('"', "'")
         return text if len(text) <= max_len else text[:max_len - 3] + "..."
 
     def _nid(prefix: str, raw: str) -> str:
