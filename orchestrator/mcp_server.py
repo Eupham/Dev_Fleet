@@ -6,6 +6,7 @@ from orchestrator.tool_sandbox import mcp
 @app.function(
     image=orchestrator_image,
     min_containers=1,
+    secrets=[modal.Secret.from_name("dev-fleet-mcp-secret")]
 )
 @modal.concurrent(max_inputs=100)
 @modal.asgi_app()
@@ -20,8 +21,8 @@ def mcp_web():
     # Middleware to protect all routes (including mounted ones)
     @fastapi_app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        # We use DF_MODAL_TOKEN_SECRET which should already be set in the modal environment
-        expected_token = os.environ.get("DF_MODAL_TOKEN_SECRET")
+        # We use MCP_AUTH_TOKEN injected from the dev-fleet-mcp-secret Modal secret
+        expected_token = os.environ.get("MCP_AUTH_TOKEN")
         if not expected_token:
             # Fallback for dev testing if secret is missing
             expected_token = "dev_token_only"
@@ -45,7 +46,7 @@ def mcp_web():
 
     return fastapi_app
 
-@app.function(image=orchestrator_image, timeout=1800)
+@app.function(image=orchestrator_image, timeout=1800, secrets=[modal.Secret.from_name("dev-fleet-mcp-secret")])
 async def test_tool(tool_name: str | None = None):
     import os
     from fastmcp import Client
@@ -54,7 +55,7 @@ async def test_tool(tool_name: str | None = None):
     if tool_name is None:
         tool_name = "playwright_screenshot"
 
-    expected_token = os.environ.get("DF_MODAL_TOKEN_SECRET", "dev_token_only")
+    expected_token = os.environ.get("MCP_AUTH_TOKEN", "dev_token_only")
     mcp_url = mcp_web.get_web_url()
 
     transport = SSETransport(
