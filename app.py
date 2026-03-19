@@ -25,6 +25,7 @@ import inference.reranker  # noqa: E402 — registers Reranker class
 import inference.embedder  # noqa: E402 — registers Embedder class
 import inference.model_pool  # noqa: E402 — registers InferenceSmall/Medium/Large
 import orchestrator.core_app  # noqa: E402 — registers run_agent
+import orchestrator.mcp_server # noqa: E402 — registers MCP server endpoint
 import ui.web  # noqa: E402 — registers UI web endpoint
 
 

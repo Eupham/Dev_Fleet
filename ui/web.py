@@ -16,8 +16,10 @@ web_image = (
     .add_local_python_source("ui", copy=True)
     .env({"CHAINLIT_USER_ENV": "DUMMY_ENV_TO_PREVENT_NULL_CRASH"})
     .add_local_dir(".chainlit", remote_path="/root/.chainlit", copy=True)
-    .add_local_dir("public", remote_path="/root/public", copy=True)
+    .add_local_dir("public", remote_path="/root/public_bak", copy=True)
 )
+
+volume = modal.Volume.from_name("dev-fleet-state-vol", create_if_missing=True)
 
 try:
     import json
@@ -533,6 +535,7 @@ workspace_vol   = modal.Volume.from_name("dev_fleet-workspace",    create_if_mis
     volumes={
         "/state":     graph_state_vol,
         "/workspace": workspace_vol,
+        "/root/public": volume,
     },
     min_containers=1,
     timeout=3600,
@@ -541,6 +544,18 @@ workspace_vol   = modal.Volume.from_name("dev_fleet-workspace",    create_if_mis
 @modal.web_server(port=8000, startup_timeout=60)
 def ui():
     import subprocess
+    import os
+    import shutil
+
+    # Initialize public volume from baked backup if empty
+    if not os.path.exists("/root/public/logo.png"):
+        for item in os.listdir("/root/public_bak"):
+            s = os.path.join("/root/public_bak", item)
+            d = os.path.join("/root/public", item)
+            if os.path.isdir(s):
+                shutil.copytree(s, d, dirs_exist_ok=True)
+            else:
+                shutil.copy2(s, d)
     # Run via shell to filter out the verbose 200 OK access logs from uvicorn
     subprocess.Popen(
         "chainlit run ui/web.py --host 0.0.0.0 --port 8000 --headless 2>&1 | grep --line-buffered -v '200 OK'",
