@@ -160,7 +160,7 @@ try:
             lines.append(f"    {_nid('proc', u)} --> {_nid('proc', v)}")
 
         mermaid_src = "\n".join(lines)
-        return f"```mermaid\n{mermaid_src}\n```"
+        return f"<div class=\"mermaid\">\n{mermaid_src}\n</div>"
 
     # ---------------------------------------------------------------------------
     # Knowledge Graph Browser — persistent action button + callback
@@ -376,9 +376,28 @@ try:
                                 if step_gpu_uptime >= 60
                                 else f"{step_gpu_uptime:.1f}s"
                             )
+
+                            diff_scores = (
+                                node_update.get("difficulty_scores")
+                                or state_snapshot.get("difficulty_scores")
+                                or {}
+                            )
+                            current_dag = node_update.get("dag") or state_snapshot.get("dag") or {}
+                            tasks = current_dag.get("tasks", []) if isinstance(current_dag, dict) else getattr(current_dag, "tasks", [])
+                            # Get the current task ID to retrieve its difficulty
+                            current_idx = step_task_idx - 1 if step_task_idx > 0 else 0
+                            task_id = ""
+                            if tasks and current_idx < len(tasks):
+                                t = tasks[current_idx]
+                                task_id = t.get("id", "") if isinstance(t, dict) else getattr(t, "id", "")
+
+                            diff_info = ""
+                            if task_id and task_id in diff_scores:
+                                diff_info = f" | **Difficulty:** `{diff_scores[task_id].get('score', 0):.2f}`"
+
                             content_lines.append(
                                 f"**Model:** `{model}` | **GPU:** `{gpu}` "
-                                f"| **Tier:** `{tier}` | **GPU uptime:** `{uptime_str}`"
+                                f"| **Tier:** `{tier}`{diff_info} | **GPU uptime:** `{uptime_str}`"
                             )
 
                         # --- Spawned sub-tasks ---
@@ -522,4 +541,8 @@ workspace_vol   = modal.Volume.from_name("dev_fleet-workspace",    create_if_mis
 @modal.web_server(port=8000, startup_timeout=60)
 def ui():
     import subprocess
-    subprocess.Popen(["chainlit", "run", "ui/web.py", "--host", "0.0.0.0", "--port", "8000", "--headless"])
+    # Run via shell to filter out the verbose 200 OK access logs from uvicorn
+    subprocess.Popen(
+        "chainlit run ui/web.py --host 0.0.0.0 --port 8000 --headless 2>&1 | grep --line-buffered -v '200 OK'",
+        shell=True
+    )
