@@ -18,7 +18,7 @@ mcp = FastMCP("Fleet-Sandbox", host="0.0.0.0")
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def execute_bash(code: str, timeout: int = 30) -> str:
+def execute_bash(code: str, timeout: int = 1800) -> str:
     """Execute bash commands in the sandbox (filesystem observation, installs)."""
     try:
         res = subprocess.run(
@@ -33,7 +33,7 @@ def execute_bash(code: str, timeout: int = 30) -> str:
 
 
 @mcp.tool()
-def execute_python(code: str, timeout: int = 30) -> str:
+def execute_python(code: str, timeout: int = 1800) -> str:
     """Execute Python code in the sandbox (task implementation)."""
     try:
         res = subprocess.run(
@@ -48,7 +48,7 @@ def execute_python(code: str, timeout: int = 30) -> str:
 
 
 @mcp.tool()
-def playwright_screenshot(url: str, output_path: str = "/workspace/screenshot.png", timeout: int = 30) -> str:
+def playwright_screenshot(url: str, output_path: str = "/workspace/screenshot.png", timeout: int = 1800) -> str:
     """Take a full-page screenshot of a URL using Playwright.
     Returns the path to the saved screenshot or an error message.
     """
@@ -85,7 +85,7 @@ asyncio.run(run())
 
 
 @mcp.tool()
-def playwright_extract_text(url: str, timeout: int = 30) -> str:
+def playwright_extract_text(url: str, timeout: int = 1800) -> str:
     """Extract visible text from a URL using Playwright.
     Useful for reading websites that require JavaScript to render.
     """
@@ -122,7 +122,7 @@ asyncio.run(run())
         return f"Error: {str(e)}"
 
 
-def forward(code: str, language: str = "python", timeout: int = 30) -> dict:
+def forward(code: str, language: str = "python", timeout: int = 1800) -> dict:
     """Unified execution gateway — returns {"stdout": ...} dict.
 
     Used by WorkspaceState.capture() and by dispatch_tool().
@@ -153,7 +153,7 @@ if results:
 else:
     print("No results found for: {repr(query)}")
 """
-    result = forward(code=code, language="python", timeout=30)
+    result = forward(code=code, language="python", timeout=60)
     output = result.get("stdout", "").strip()
     return output if output else f"No search results for: {query}"
 
@@ -161,7 +161,7 @@ else:
 @mcp.tool()
 def run_code(language: str, code: str) -> str:
     """Execute Python or bash code in the sandbox. Returns stdout/stderr."""
-    result = forward(code=code, language=language, timeout=30)
+    result = forward(code=code, language=language, timeout=1800)
     output = result.get("stdout", "")
     return output if output else "Code executed (no output)."
 

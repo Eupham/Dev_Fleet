@@ -24,8 +24,10 @@ def mcp_web():
         # We use MCP_AUTH_TOKEN injected from the dev-fleet-mcp-secret Modal secret
         expected_token = os.environ.get("MCP_AUTH_TOKEN")
         if not expected_token:
-            # Fallback for dev testing if secret is missing
-            expected_token = "dev_token_only"
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Server misconfiguration: missing MCP_AUTH_TOKEN"}
+            )
 
         auth_header = request.headers.get("Authorization")
         if not auth_header or auth_header != f"Bearer {expected_token}":
@@ -55,8 +57,11 @@ async def test_tool(tool_name: str | None = None):
     if tool_name is None:
         tool_name = "playwright_screenshot"
 
-    expected_token = os.environ.get("MCP_AUTH_TOKEN", "dev_token_only")
-    mcp_url = mcp_web.get_web_url()
+    expected_token = os.environ.get("MCP_AUTH_TOKEN")
+    if not expected_token:
+        raise ValueError("Missing MCP_AUTH_TOKEN in environment")
+
+    mcp_url = await mcp_web.get_web_url.aio()
 
     transport = SSETransport(
         url=f"{mcp_url}/sse",
@@ -97,12 +102,14 @@ async def interact():
             await page.fill('textarea[id="chat-input"]', prompt)
             await page.press('textarea[id="chat-input"]', 'Enter')
 
-            # Let the agent start processing
-            print("Waiting 15 seconds for agent execution to kick off...")
-            await page.wait_for_timeout(15000)
+            # Rather than waiting for a brittle selector like `#stop-button` which may not exist
+            # or may time out, we just wait a fixed 3.5 minutes to let the agent compile tools
+            # and run its LLM calls in the background. The user wants to see "till it runs clean."
+            print("Waiting 200 seconds for agent to execute and print output to the screen...")
+            await page.wait_for_timeout(200000)
 
-            await page.screenshot(path="/workspace/chainlit_agent_started.png", full_page=True)
-            print("Success! Automation completed and screenshot saved to /workspace/chainlit_agent_started.png")
+            await page.screenshot(path="/workspace/chainlit_agent_finished.png", full_page=True)
+            print("Success! UI automation completed and screenshot saved to /workspace/chainlit_agent_finished.png")
 
         except Exception as e:
             print(f"Error driving UI: {{e}}")
