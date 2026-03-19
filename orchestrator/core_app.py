@@ -43,7 +43,8 @@ orchestrator_image = (
     .uv_pip_install(
         "scipy<1.16.0",
         "networkx>=3.2",
-        "pydantic>=2.5",
+        "pydantic==2.11.10",
+        "fastapi==0.115.14",
         "pathspec>=0.12.1",
         "orjson>=3.11.7",
         "llama-index-core>=0.10.0",
@@ -51,6 +52,7 @@ orchestrator_image = (
         "llama-index-embeddings-huggingface>=0.1.0",
         "langgraph>=1.1.2",
         "mcp>=1.26.0",
+        "fastmcp==2.10.6",
         "radon>=6.0",
         "tree-sitter>=0.25.2",
         "tree-sitter-javascript>=0.23",
@@ -59,7 +61,9 @@ orchestrator_image = (
         "trafilatura>=2.0.0",
         "pymupdf>=1.27.2",
         "ddgs>=6.3.7",           # web_search tool — baked in so no runtime install
+        "playwright>=1.49.1",
     )
+    .run_commands("playwright install --with-deps chromium")
 )
 
 # ---------------------------------------------------------------------------
