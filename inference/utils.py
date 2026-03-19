@@ -25,6 +25,7 @@ def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
     download_url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
     return (
         modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.12")
+        .run_commands("rm -f /etc/motd /NGC-DL-CONTAINER-LICENSE || true")
         .apt_install("build-essential", "clang", "cmake", "git", "curl", "ninja-build")
         .run_commands("ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1")
         .env({"HF_HOME": "/vol/cache"})

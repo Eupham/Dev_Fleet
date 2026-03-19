@@ -30,8 +30,9 @@ def compression_complexity(text: str) -> float:
         return 0.0
     raw = text.encode("utf-8")
     compressed = gzip.compress(raw, compresslevel=9)
-    # Ratio: compressed_size / raw_size. Pure random ≈ 1.0, repetitive ≈ 0.0
-    return min(1.0, len(compressed) / len(raw))
+    # Use normalized absolute compressed size instead of compression ratios
+    # to prevent short strings from artificially skewing to maximum difficulty.
+    return min(1.0, len(compressed) / 256.0)
 def conditional_complexity(task_description: str, knowledge_context: str) -> float:
     """Approximate K(task | knowledge) — conditional Kolmogorov complexity.
     Measures how much NEW information the task requires beyond what the
