@@ -1,0 +1,123 @@
+name: Volume Deploy — Dev Fleet
+
+# Deploy Dev Fleet FROM the Modal Volume rather than from a git checkout.
+#
+# This is the target steady-state workflow.  GitHub is used here only as a
+# trigger and as a place to store secrets; the actual source of truth for
+# code is the dev-fleet-repo Modal Volume.
+#
+# Secrets required (GitHub environment: "modal secrets")
+# ───────────────────────────────────────────────────────
+#   DF_MODAL_VOLUME_TOKEN_ID      — second Modal account (volume management)
+#   DF_MODAL_VOLUME_TOKEN_SECRET
+#   DF_MODAL_TOKEN_ID             — primary Modal account (app deployment)
+#   DF_MODAL_TOKEN_SECRET
+#
+# Jobs
+# ────
+#   sync   — push GitHub checkout → dev-fleet-repo volume  (optional, skipped by default)
+#   deploy — pull volume → deploy modal app
+
+on:
+  # Run automatically only when volume_manager.py or volume_deploy.sh change,
+  # so that updates to the volume tooling itself are always reflected.
+  push:
+    branches: [main]
+    paths:
+      - "volume_manager.py"
+      - "volume_deploy.sh"
+
+  # Manual trigger is the primary path: push to volume locally, then
+  # kick off this workflow to deploy from the volume.
+  workflow_dispatch:
+    inputs:
+      sync_first:
+        description: "Sync GitHub checkout → volume before deploying?"
+        required: false
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+
+jobs:
+  # ── optional: push the GitHub checkout into the volume ──────────────────────
+  sync:
+    name: Sync repo → Modal Volume
+    if: ${{ github.event_name == 'push' || inputs.sync_first == 'true' }}
+    runs-on: ubuntu-latest
+    environment: modal secrets
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Modal
+        run: pip install "modal>=1.3.5"
+
+      - name: Push repo to dev-fleet-repo volume
+        env:
+          # Use second-set credentials for volume management
+          MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_VOLUME_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_VOLUME_TOKEN_SECRET }}
+        run: python volume_manager.py push
+
+  # ── deploy from the volume ───────────────────────────────────────────────────
+  deploy:
+    name: Deploy Dev Fleet from Volume
+    # Always deploy; if sync ran we wait for it, otherwise go straight here.
+    needs: [sync]
+    if: always() && (needs.sync.result == 'success' || needs.sync.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: modal secrets
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Modal
+        run: pip install "modal>=1.3.5"
+
+      - name: Pull volume → /tmp/dev-fleet-deploy
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_VOLUME_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_VOLUME_TOKEN_SECRET }}
+        run: |
+          # Pull volume_manager.py itself from the volume first so we don't
+          # need a git checkout.  The volume is the source of truth.
+          python - <<'PYEOF'
+          import modal, pathlib, os
+
+          VOLUME_NAME = "dev-fleet-repo"
+          dest = pathlib.Path("/tmp/dev-fleet-deploy")
+          dest.mkdir(parents=True, exist_ok=True)
+
+          vol = modal.Volume.from_name(VOLUME_NAME)
+          count = 0
+          for entry in vol.listdir("/", recursive=True):
+              if entry.type != modal.volume.FileEntryType.FILE:
+                  continue
+              local_file = dest / entry.path.lstrip("/")
+              local_file.parent.mkdir(parents=True, exist_ok=True)
+              data = b"".join(vol.read_file(entry.path))
+              local_file.write_bytes(data)
+              count += 1
+          print(f"✓ Pulled {count} files to {dest}")
+          PYEOF
+
+      - name: Deploy from volume snapshot
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
+        run: modal deploy /tmp/dev-fleet-deploy/app.py
+
+      - name: Fetch deployment logs
+        if: always()
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.DF_MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.DF_MODAL_TOKEN_SECRET }}
+        run: timeout 30 modal app logs dev_fleet || true

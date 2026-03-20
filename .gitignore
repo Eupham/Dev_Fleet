@@ -36,6 +36,9 @@ htmlcov/
 *.log
 .chainlit/translations
 
+# Volume deploy artifacts (local pull destination — never commit)
+dev-fleet-deploy/
+
 # Local bridge tooling (contains credentials — never commit)
 auto_deploy.py
 payload.zip
