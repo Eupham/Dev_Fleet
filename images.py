@@ -109,8 +109,11 @@ orchestrator_image = (
 # ---------------------------------------------------------------------------
 
 def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
-    """Build a GPU inference image for a specific GGUF model."""
-    download_url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
+    """Build a GPU inference image for a specific GGUF model.
+
+    The model file is NOT baked into the image — it is downloaded on first cold start
+    via huggingface_hub + hf_transfer and persisted to the ``dev-fleet-models`` Volume.
+    """
     return (
         modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.12")
         .apt_install("build-essential", "clang", "cmake", "git", "curl", "ninja-build")
@@ -118,6 +121,7 @@ def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
         .env({"HF_HOME": "/vol/cache"})
         .uv_pip_install(
             "huggingface_hub",
+            "hf_transfer",
             "langgraph>=1.1.2",
             "mcp>=1.26.0",
             "requests",
@@ -125,6 +129,7 @@ def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
             "networkx>=3.2",
             "pydantic>=2.5",
         )
+        .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
         .run_commands([
             "git clone https://github.com/ggerganov/llama.cpp.git /tmp/llama.cpp",
             "export LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs && "
@@ -136,8 +141,5 @@ def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
         ])
         .add_local_python_source("fleet_app", copy=True)
         .add_local_file("inference/config.toml", remote_path="/root/inference/config.toml", copy=True)
-        .run_commands([
-            "mkdir -p /root/models",
-            f"curl -L -o /root/models/{filename} {download_url}",
-        ])
+        .run_commands(["mkdir -p /root/models"])
     )

@@ -54,7 +54,16 @@ class BaseInference:
         model_path = f"/root/models/{cfg['filename']}"
 
         if not os.path.exists(model_path):
-            raise RuntimeError(f"CRITICAL: File NOT found at {model_path}.")
+            print(f"Model not found at {model_path}. Downloading {cfg['filename']} from {cfg['repo_id']} via hf_transfer...")
+            from huggingface_hub import hf_hub_download
+            from fleet_app import models_volume
+            hf_hub_download(
+                repo_id=cfg["repo_id"],
+                filename=cfg["filename"],
+                local_dir="/root/models",
+            )
+            models_volume.commit()
+            print("Download complete and committed to volume.")
 
         print(f"Booting raw llama-server for {cfg.get('repo_id')}...")
 

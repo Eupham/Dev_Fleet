@@ -1,5 +1,5 @@
 import modal
-from fleet_app import app
+from fleet_app import app, models_volume
 from images import build_llama_image
 from inference.utils import get_tier_config, BaseInference
 
@@ -10,6 +10,7 @@ _cfg = get_tier_config("moderate")
     gpu=_cfg.get("gpu", "L40S"),
     scaledown_window=_cfg.get("scaledown_window", 2),
     timeout=_cfg.get("timeout", 1800),
+    volumes={"/root/models": models_volume},
 )
 class Inference(BaseInference):
     @modal.enter()
