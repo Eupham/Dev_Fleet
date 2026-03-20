@@ -9,6 +9,8 @@ web_image = (
         "chainlit==2.10.0",  # pinned to match the monkey-patch target
         "llama-index-core>=0.14.17", "llama-index-embeddings-huggingface>=0.7.0",
         "orjson>=3.11.7", "pathspec>=1.0.4",
+        # Persistent chat history + multi-session support
+        "SQLAlchemy>=2.0.0", "aiosqlite>=0.20.0",
     )
     .add_local_python_source("fleet_app", copy=True)
     .add_local_python_source("orchestrator", copy=True)
@@ -21,8 +23,27 @@ web_image = (
 
 try:
     import json
+    from typing import Optional
     import chainlit as cl
+    import chainlit.data as cl_data
+    from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
     import orjson
+
+    # ---------------------------------------------------------------------------
+    # Persistent data layer — stores chat threads in a SQLite DB on Modal Volume
+    # The /state volume is mounted at runtime; tables are created automatically.
+    # ---------------------------------------------------------------------------
+    cl_data._data_layer = SQLAlchemyDataLayer(
+        conninfo="sqlite+aiosqlite:////state/chainlit.db"
+    )
+
+    # ---------------------------------------------------------------------------
+    # Auto-authentication — required for the thread sidebar to display history.
+    # No login screen is shown; every visitor is treated as "admin".
+    # ---------------------------------------------------------------------------
+    @cl.header_auth_callback
+    def header_auth_callback(headers: dict) -> Optional[cl.User]:
+        return cl.User(identifier="admin", metadata={"role": "admin"})
 
     # ---------------------------------------------------------------------------
     # Mermaid shape helpers — different shapes per node label type
@@ -186,6 +207,23 @@ try:
             ],
         ).send()
 
+    @cl.on_chat_resume
+    async def on_chat_resume(thread: cl.Thread):
+        """Called when the user reopens a previous conversation from the sidebar.
+        Previous messages are automatically restored by Chainlit; we just
+        re-attach the knowledge-graph action button so it stays available."""
+        await cl.Message(
+            content="*Session resumed.*",
+            actions=[
+                cl.Action(
+                    name="browse_knowledge",
+                    label="Browse Knowledge Graph",
+                    description="Load and display the full Tri-Graph knowledge state from persistent storage",
+                    payload={},
+                )
+            ],
+        ).send()
+
     @cl.action_callback("browse_knowledge")
     async def on_browse_knowledge(action: cl.Action):
         """Load the persisted knowledge graphs and render them as a Mermaid diagram."""
@@ -269,6 +307,16 @@ try:
 
         prompt = message.content
         run_agent_stream_func = modal.Function.from_name("dev_fleet", "run_agent_stream")
+
+        # Name the thread after the first user message so the sidebar shows a
+        # meaningful label instead of a blank or timestamp-based entry.
+        if not cl.user_session.get("_thread_named"):
+            cl.user_session.set("_thread_named", True)
+            try:
+                thread_name = prompt.strip()[:80]
+                await cl.context.emitter.update_thread(name=thread_name)
+            except Exception:
+                pass
 
         # Three separate persistent messages:
         #   task_msg      — the task list (lazy; created once DAG is available)
