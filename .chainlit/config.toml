@@ -95,7 +95,7 @@ reaction_on_message_received = false
     allowed_executables = [ "npx", "uvx" ]
 
 [UI]
-name = "Assistant"
+name = "Dev Fleet"
 custom_js = "/public/mermaid_init.js"
 
 # default_theme = "dark"
@@ -106,7 +106,7 @@ custom_js = "/public/mermaid_init.js"
 
 # layout = "wide"
 
-# default_sidebar_state = "open"  # Options: "open", "closed", "hidden"
+default_sidebar_state = "open"  # Options: "open", "closed", "hidden"
 
 # Chat settings display location: "message_composer" (default) or "sidebar" (header)
 # chat_settings_location = "message_composer"
