@@ -40,7 +40,7 @@ def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
         .apt_install("build-essential", "clang", "cmake", "git", "curl", "ninja-build")
         .run_commands("ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1")
         .env({"HF_HOME": "/vol/cache"})
-        .pip_install("huggingface_hub", "langgraph>=1.1.2", "mcp>=1.26.0", "requests", "openai", "networkx>=3.2", "pydantic>=2.5")
+        .uv_pip_install("huggingface_hub", "langgraph>=1.1.2", "mcp>=1.26.0", "requests", "openai", "networkx>=3.2", "pydantic>=2.5")
         .run_commands([
             "git clone https://github.com/ggerganov/llama.cpp.git /tmp/llama.cpp",
             "export LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs && "

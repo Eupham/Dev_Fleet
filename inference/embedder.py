@@ -23,7 +23,7 @@ MODEL_NAME = "Qwen/Qwen3-Embedding-0.6B"
 embedder_image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("libblas-dev", "liblapack-dev")
-    .pip_install(
+    .uv_pip_install(
         "scipy<1.16.0",
         "sentence-transformers>=2.0.0",
         "huggingface-hub",

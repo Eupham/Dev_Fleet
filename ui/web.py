@@ -3,7 +3,7 @@ from fleet_app import app
 
 web_image = (
     modal.Image.debian_slim(python_version="3.12")
-    .pip_install(
+    .uv_pip_install(
         "fastapi>=0.135.1", "uvicorn>=0.41.0", "jinja2>=3.1.6", "python-multipart>=0.0.22",
         "pydantic>=2.12.5", "networkx>=3.6.1", "mcp>=1.26.0", "langgraph>=1.1.2",
         "chainlit==2.10.0",  # pinned to match the monkey-patch target
