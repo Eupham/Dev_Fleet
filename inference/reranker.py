@@ -13,6 +13,7 @@ from __future__ import annotations
 import modal
 
 from fleet_app import app
+from images import reranker_image
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -25,24 +26,6 @@ MAX_LENGTH = 8192
 RERANK_INSTRUCTION = (
     "Given a coding task, assess whether the knowledge-graph node "
     "contains information relevant to completing the task"
-)
-
-# ---------------------------------------------------------------------------
-# Container image — PyTorch + Transformers (CPU-only, 0.6B model)
-# ---------------------------------------------------------------------------
-
-reranker_image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .apt_install("libblas-dev", "liblapack-dev")
-    .uv_pip_install(
-        "torch>=2.0",
-        "transformers>=4.51.0",
-        "huggingface-hub>=0.20",
-        "hf_transfer",
-    )
-    
-    .env({"HF_HOME": "/vol/cache"})
-    .add_local_python_source("fleet_app", copy=True)
 )
 
 # ---------------------------------------------------------------------------

@@ -9,30 +9,13 @@ from typing import List
 import modal
 
 from fleet_app import app  # shared app defined in app.py
+from images import embedder_image
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 MODEL_NAME = "Qwen/Qwen3-Embedding-0.6B"
-
-# ---------------------------------------------------------------------------
-# Container image — CPU + SentenceTransformers
-# ---------------------------------------------------------------------------
-
-embedder_image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .apt_install("libblas-dev", "liblapack-dev")
-    .uv_pip_install(
-        "scipy<1.16.0",
-        "sentence-transformers>=2.0.0",
-        "huggingface-hub",
-        "hf_transfer",
-    )
-    
-    .env({"HF_HOME": "/vol/cache"})
-    .add_local_python_source("fleet_app", copy=True)
-)
 
 
 cache_vol = modal.Volume.from_name("model-cache-vol", create_if_missing=True)

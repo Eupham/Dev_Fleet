@@ -1,6 +1,7 @@
 import modal
 from fleet_app import app
-from inference.utils import get_tier_config, build_llama_image, BaseInference
+from images import build_llama_image
+from inference.utils import get_tier_config, BaseInference
 
 _cfg = get_tier_config("moderate")
 

@@ -17,6 +17,7 @@ from typing import AsyncIterator, Dict, Any
 import modal
 
 from fleet_app import app  # shared app defined in app.py
+from images import orchestrator_image
 
 # ---------------------------------------------------------------------------
 # Logging — all critical state goes to stdout for `modal app logs`
@@ -29,38 +30,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%SZ",
 )
 logger = logging.getLogger("dev_fleet.orchestrator")
-
-# ---------------------------------------------------------------------------
-# Container image — lightweight CPU image for orchestration logic
-# ---------------------------------------------------------------------------
-
-orchestrator_image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .add_local_python_source("fleet_app", copy=True)
-    .add_local_python_source("inference", copy=True)
-    .add_local_python_source("orchestrator", copy=True)
-    .apt_install("libblas-dev", "liblapack-dev")
-    .uv_pip_install(
-        "scipy<1.16.0",
-        "networkx>=3.2",
-        "pydantic>=2.5",
-        "pathspec>=0.12.1",
-        "orjson>=3.11.7",
-        "llama-index-core>=0.10.0",
-        "llama-index>=0.10.0",
-        "llama-index-embeddings-huggingface>=0.1.0",
-        "langgraph>=1.1.2",
-        "mcp>=1.26.0",
-        "radon>=6.0",
-        "tree-sitter>=0.25.2",
-        "tree-sitter-javascript>=0.23",
-        "markdown-it-py>=3.0",
-        "beautifulsoup4>=4.12",
-        "trafilatura>=2.0.0",
-        "pymupdf>=1.27.2",
-        "ddgs>=6.3.7",           # web_search tool — baked in so no runtime install
-    )
-)
 
 # ---------------------------------------------------------------------------
 # Volumes / state persistence
