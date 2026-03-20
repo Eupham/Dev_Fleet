@@ -11,7 +11,6 @@ FIXES APPLIED (v3):
    choke on openai.APIStatusError deserialization across boundaries.
 5. Adds --log-disable to suppress llama-server startup noise.
 """
-import modal
 import tomllib
 import os
 import subprocess
@@ -31,33 +30,6 @@ def get_tier_config(tier: str) -> dict:
     tier_cfg = config[tier]
     tier_cfg["repo_id"] = config["models"][tier]
     return tier_cfg
-
-def build_llama_image(repo_id: str, filename: str, **kwargs) -> modal.Image:
-    download_url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
-
-    return (
-        modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.12")
-        .apt_install("build-essential", "clang", "cmake", "git", "curl", "ninja-build")
-        .run_commands("ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1")
-        .env({"HF_HOME": "/vol/cache"})
-        .pip_install("huggingface_hub", "langgraph>=1.1.2", "mcp>=1.26.0", "requests", "openai", "networkx>=3.2", "pydantic>=2.5")
-        .run_commands([
-            "git clone https://github.com/ggerganov/llama.cpp.git /tmp/llama.cpp",
-            "export LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs && "
-            "cd /tmp/llama.cpp && "
-            "cmake -B build -DGGML_CUDA=ON -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TESTS=OFF -G Ninja && "
-            "cmake --build build --config Release && "
-            # FIX: Use cmake --install to properly place the binary AND the shared libraries
-            "cmake --install build && "
-            "ldconfig"  # Refreshes the system library cache
-        ])
-        .add_local_python_source("fleet_app", copy=True)
-        .add_local_file("inference/config.toml", remote_path="/root/inference/config.toml", copy=True)
-        .run_commands([
-            "mkdir -p /root/models",
-            f"curl -L -o /root/models/{filename} {download_url}"
-        ])
-    )
 
 # ---------------------------------------------------------------------------
 # Tool definitions for the structured-fallback prompt

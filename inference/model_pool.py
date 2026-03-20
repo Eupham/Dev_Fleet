@@ -1,6 +1,7 @@
 import modal
 from fleet_app import app
-from inference.utils import get_tier_config, build_llama_image, BaseInference
+from images import build_llama_image
+from inference.utils import get_tier_config, BaseInference
 
 # --- Trivial Tier (T4) ---
 _cfg_small = get_tier_config("trivial")

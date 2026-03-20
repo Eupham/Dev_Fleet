@@ -10,7 +10,7 @@ pathspec>=0.12.1
 orjson>=3.11.7
 
 # LangGraph agent loop
-langgraph>=0.2.0
+langgraph>=1.1.2
 langgraph-checkpoint-sqlite>=2.0.0
 
 # LlamaIndex graph memory
@@ -34,5 +34,4 @@ beautifulsoup4>=4.12.0
 requests>=2.31.0
 pymupdf>=1.24
 
-langgraph>=0.0.26
-mcp>=0.1.0
+mcp>=1.26.0
