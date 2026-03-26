@@ -1,12 +1,12 @@
 [models]
-trivial = "unsloth/Qwen3.5-4B-GGUF"
-simple = "unsloth/Qwen3.5-9B-GGUF"
-moderate = "unsloth/Qwen3.5-35B-A3B-GGUF"
-expert = "unsloth/Qwen3.5-35B-A3B-GGUF"
+trivial = "Qwen/Qwen2.5-3B-Instruct-GGUF"
+simple = "Qwen/Qwen2.5-7B-Instruct-GGUF"
+moderate = "Qwen/Qwen2.5-32B-Instruct-GGUF"
+expert = "Qwen/Qwen2.5-32B-Instruct-GGUF"
 
 [trivial]
 served_model_name = "llm-small"
-filename = "Qwen3.5-4B-Q4_K_M.gguf"
+filename = "qwen2.5-3b-instruct-q4_k_m.gguf"
 n_ctx = 8192
 gpu = "T4"
 scaledown_window = 2
@@ -14,7 +14,7 @@ timeout = 600
 
 [simple]
 served_model_name = "llm-medium"
-filename = "Qwen3.5-9B-Q4_K_M.gguf"
+filename = "qwen2.5-7b-instruct-q4_k_m.gguf"
 n_ctx = 16384
 gpu = "L4"
 scaledown_window = 2
@@ -22,7 +22,7 @@ timeout = 600
 
 [moderate]
 served_model_name = "llm"
-filename = "Qwen3.5-35B-A3B-Q4_K_M.gguf"
+filename = "qwen2.5-32b-instruct-q4_k_m.gguf"
 n_ctx = 32768
 gpu = "L40S"
 scaledown_window = 2
@@ -30,7 +30,7 @@ timeout = 1800
 
 [expert]
 served_model_name = "llm-large"
-filename = "Qwen3.5-35B-A3B-Q4_K_M.gguf"
+filename = "qwen2.5-32b-instruct-q4_k_m.gguf"
 n_ctx = 32768
 gpu = "L40S"
 scaledown_window = 2
